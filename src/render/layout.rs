@@ -90,6 +90,9 @@ pub struct Layouter<'a> {
     /// The body text size in CSS px: 16, or smaller in the footnotes.
     fsize: f32,
     in_footnotes: bool,
+    fresh_anchors: Vec<String>,
+    prev_char: Option<char>,
+    open_dash: bool,
 }
 
 /// The box behind a run of inline text.
@@ -167,6 +170,9 @@ pub fn layout(fonts: &mut Fonts, th: &Theme, o: &Opts, doc: &Doc, images: &mut I
         after_head: false,
         fsize: 16.0,
         in_footnotes: false,
+        fresh_anchors: vec![],
+        prev_char: None,
+        open_dash: false,
     };
     l.page.urls = doc.links.clone();
     l.page.w = o.width;
@@ -229,6 +235,7 @@ impl<'a> Layouter<'a> {
 
     fn gap(&self, prev: &Block, next: &Block, tight: bool) -> f32 {
         let s = self.s;
+        let (prev, next) = (edge(prev, <[Block]>::last), edge(next, <[Block]>::first));
         if tight && matches!(prev, Block::Para(_)) && matches!(next, Block::List { .. }) {
             return 0.0;
         }
@@ -250,6 +257,10 @@ impl<'a> Layouter<'a> {
     fn blocks(&mut self, bs: &[Block], x: f32, w: f32, y: &mut f32, tight: bool) {
         // A container's first heading follows its own start, not the block before the container.
         self.after_head = false;
+        self.run(bs, x, w, y, tight);
+    }
+
+    fn run(&mut self, bs: &[Block], x: f32, w: f32, y: &mut f32, tight: bool) {
         for (i, b) in bs.iter().enumerate() {
             if i > 0 {
                 *y += self.gap(&bs[i - 1], b, tight);
@@ -265,7 +276,7 @@ impl<'a> Layouter<'a> {
 
     fn block(&mut self, b: &Block, x: f32, w: f32, y: &mut f32, tight: bool) {
         self.block_inner(b, x, w, y, tight);
-        self.after_head = matches!(b, Block::Heading(..) | Block::Rule);
+        self.after_head = ends_in_head(b);
     }
 
     fn block_inner(&mut self, b: &Block, x: f32, w: f32, y: &mut f32, tight: bool) {
@@ -369,7 +380,7 @@ impl<'a> Layouter<'a> {
             Block::Align(a, bs) => {
                 let old = self.align;
                 self.align = *a;
-                self.blocks(bs, x, w, y, tight);
+                self.run(bs, x, w, y, tight);
                 self.align = old;
             }
             Block::Footnotes(v) => {
@@ -765,7 +776,7 @@ impl<'a> Layouter<'a> {
 
     // ---------- tables ----------
 
-    fn table(&mut self, aligns: &[Align], head: &[Vec<Inline>], rows: &[Vec<Vec<Inline>>], x: f32, w: f32, y: &mut f32) {
+    fn table(&mut self, aligns: &[Option<Align>], head: &[Vec<Inline>], rows: &[Vec<Vec<Inline>>], x: f32, w: f32, y: &mut f32) {
         let s = self.s;
         let ncol = head.len().max(rows.iter().map(std::vec::Vec::len).max().unwrap_or(0));
         if ncol == 0 {
@@ -793,18 +804,36 @@ impl<'a> Layouter<'a> {
         for r in rows {
             measure_row(self, r, &tcn);
         }
-        let sum_min: f32 = minw.iter().sum::<f32>() + ncol as f32 * 2.0 * padx;
-        let sum_max: f32 = maxw.iter().sum::<f32>() + ncol as f32 * 2.0 * padx;
-        let colw: Vec<f32> = if sum_max <= w {
-            (0..ncol).map(|c| maxw[c] + 2.0 * padx).collect()
-        } else if sum_min >= w {
-            (0..ncol).map(|c| minw[c] + 2.0 * padx).collect()
-        } else {
-            let t = (w - sum_min) / (sum_max - sum_min);
-            (0..ncol).map(|c| minw[c] + (maxw[c] - minw[c]) * t + 2.0 * padx).collect()
+        let (line, bw) = (s.max(1.0), s);
+        let unit = |v: f32, up: bool| {
+            let u = v * 64.0;
+            (if up { u.ceil() } else { u.floor() }) / 64.0
         };
-        let tw: f32 = colw.iter().sum();
-        let scroll = tw > w + 0.5;
+        let cell_w = |v: f32| unit(v, true) + 2.0 * padx + bw;
+        let avail = w - bw;
+        let sum_min: f32 = minw.iter().map(|&v| cell_w(v)).sum();
+        let sum_max: f32 = maxw.iter().map(|&v| cell_w(v)).sum();
+        let colw: Vec<f32> = if sum_max <= avail {
+            maxw.iter().map(|&v| cell_w(v)).collect()
+        } else if sum_min >= avail {
+            minw.iter().map(|&v| cell_w(v)).collect()
+        } else {
+            let (extra, range) = (avail - sum_min, sum_max - sum_min);
+            let mut colw: Vec<f32> = (0..ncol).map(|c| cell_w(minw[c]) + unit((cell_w(maxw[c]) - cell_w(minw[c])) * extra / range, false)).collect();
+            let rest = avail - colw.iter().sum::<f32>();
+            if let Some(last) = colw.last_mut() {
+                *last += rest;
+            }
+            colw
+        };
+        let cum: Vec<f32> = std::iter::once(0.0)
+            .chain(colw.iter().scan(0.0, |a, &cw| {
+                *a += cw;
+                Some(*a)
+            }))
+            .collect();
+        let tw: f32 = cum[ncol] + bw;
+        let scroll = tw > w + 0.5 * s;
         let y0 = *y;
         let old_clip = self.clip;
         let hs_idx = self.page.hscroll.len();
@@ -813,41 +842,53 @@ impl<'a> Layouter<'a> {
             self.clip = self.page.hscroll.len() as u16;
         }
         let bc = self.th.rule;
-        let line = s.max(1.0);
-        let mut cy = y0;
+        let snap = |v: f32| v.round();
+        let mut top = 0f32;
         let nrows = rows.len() + 1;
         // Front matter's table has no head row.
         for ri in usize::from(head.is_empty())..nrows {
             let (cells, tc, hdr) = if ri == 0 { (head, &tch, true) } else { (&rows[ri - 1][..], &tcn, false) };
-            // bg placeholder
-            let bgi = if self.th.table_stripes && !hdr && ri % 2 == 0 { Some(self.rect(x, cy, tw, 0.0, self.th.alt_bg, 0.0)) } else { None };
-            let mut rh = 0f32;
-            let mut cx = x;
+            let bgi = if self.th.table_stripes && !hdr && ri % 2 == 0 { Some(self.rect(x, snap(y0 + top), tw, 0.0, self.th.alt_bg, 0.0)) } else { None };
+            self.rect(x, snap(y0 + top), tw, line, bc, 0.0);
+            let ty0 = y0 + top + bw + pady;
+            let mut laid = vec![];
             for (c, &cw) in colw.iter().enumerate() {
                 let cell: &[Inline] = cells.get(c).map(|v| &v[..]).unwrap_or(&[]);
-                let mut ty = cy + pady;
+                let mut ty = ty0;
                 let mut t2 = tc.clone();
-                t2.align = aligns.get(c).copied().unwrap_or_default();
+                t2.align = aligns.get(c).copied().flatten().unwrap_or(if hdr && self.th.look == Look::Github { Align::Center } else { Align::Left });
                 self.pend_space = false;
-                self.inlines(cell, cx + padx, cw - 2.0 * padx, &mut ty, &t2);
+                let (items, links, anchors) = (self.page.items.len(), self.page.links.len(), self.fresh_anchors.len());
+                self.inlines(cell, x + cum[c] + padx, cw - bw - 2.0 * padx, &mut ty, &t2);
                 self.page.text.push(if c + 1 < ncol { '\t' } else { '\n' });
-                rh = rh.max(ty + pady - cy);
-                cx += cw;
+                laid.push((items, links, anchors, ty - ty0));
             }
+            let content = laid.iter().map(|l| l.3).fold(0.0, f32::max);
+            for (k, &(items, links, anchors, h)) in laid.iter().enumerate() {
+                let end = laid.get(k + 1).map_or((self.page.items.len(), self.page.links.len(), self.fresh_anchors.len()), |n| (n.0, n.1, n.2));
+                let dy = (content - h) / 2.0;
+                if dy > 0.0 {
+                    self.page.items[items..end.0].iter_mut().for_each(|it| it.y += dy);
+                    self.page.links[links..end.1].iter_mut().for_each(|l| l.y += dy);
+                    for key in &self.fresh_anchors[anchors..end.2] {
+                        if let Some(y) = self.page.anchors.get_mut(key) {
+                            *y += dy;
+                        }
+                    }
+                }
+            }
+            let rh = content + 2.0 * pady + bw;
             if let Some(i) = bgi {
-                self.page.items[i].h = rh;
+                self.page.items[i].h = snap(y0 + top + rh) - snap(y0 + top);
             }
-            cy += rh;
-            self.rect(x, cy, tw, line, bc, 0.0);
-            cy += line;
+            top += rh;
         }
-        self.rect(x, y0, tw, line, bc, 0.0);
-        let mut vx = x;
-        for &cw in &colw {
-            self.rect(vx, y0, line, cy - y0, bc, 0.0);
-            vx += cw;
+        let cy = snap(y0 + top);
+        self.rect(x, cy, tw, line, bc, 0.0);
+        for &c in &cum {
+            self.rect(snap(x + c), snap(y0), line, cy + line - snap(y0), bc, 0.0);
         }
-        self.rect(vx - line, y0, line, cy - y0, bc, 0.0);
+        let cy = cy + bw;
         self.clip = old_clip;
         let mut bottom = cy;
         if scroll {
@@ -889,7 +930,11 @@ impl<'a> Layouter<'a> {
         let th = self.th;
         // The link being read, where its atoms end, and whether it holds an image.
         let mut run: Option<(u32, usize, bool)> = None;
+        (self.prev_char, self.open_dash) = (None, false);
         for i in inl {
+            if !matches!(i, Inline::Text(..)) {
+                (self.prev_char, self.open_dash) = (None, false);
+            }
             let link = match i {
                 Inline::Text(_, st) | Inline::Math(_, st) => Some(st.link),
                 Inline::Img { link, .. } => Some(*link),
@@ -980,6 +1025,9 @@ impl<'a> Layouter<'a> {
                         self.text_atoms(&t, &sty, &t2, &mut out);
                     }
                 }
+            }
+            if !matches!(i, Inline::Text(..)) {
+                (self.prev_char, self.open_dash) = (None, false);
             }
             if let Some(l) = link.filter(|l| *l > 0) {
                 let img = matches!(i, Inline::Img { .. }) || run.is_some_and(|r| r.2);
@@ -1095,21 +1143,32 @@ impl<'a> Layouter<'a> {
             out.push(Atom { k: AtomKind::Word(std::mem::take(word)), w, f, color, under, strike, link: st.link, bg, ox: 0.0, shift, cjk, up: 0.0, down: 0.0 });
         };
         let sp_w = self.fonts.measure(f, " ");
-        for c in t.chars() {
+        let mut chars = t.chars().peekable();
+        let mut brk = std::mem::take(&mut self.open_dash) && t.chars().next().is_some_and(char::is_alphabetic);
+        let mut before = self.prev_char;
+        while let Some(c) = chars.next() {
             if c.is_whitespace() && c != '\u{a0}' {
-                push_word(self, &mut word, out, false);
+                push_word(self, &mut word, out, std::mem::take(&mut brk));
                 if !matches!(out.last().map(|a| &a.k), Some(AtomKind::Space)) || out.len() == first_idx {
                     out.push(Atom { k: AtomKind::Space, w: sp_w, f, color, under, strike, link: st.link, bg, ox: 0.0, shift, cjk: false, up: 0.0, down: 0.0 });
                 }
             } else if is_cjk(c) {
-                push_word(self, &mut word, out, false);
+                push_word(self, &mut word, out, std::mem::take(&mut brk));
                 word.push(c);
                 push_word(self, &mut word, out, true);
+            } else if c == '-' && before.is_some_and(|b| !b.is_whitespace()) && chars.peek().is_some_and(|n| n.is_alphabetic()) {
+                word.push(c);
+                push_word(self, &mut word, out, std::mem::take(&mut brk));
+                brk = true;
             } else {
                 word.push(c);
             }
+            before = Some(c);
         }
-        push_word(self, &mut word, out, false);
+        push_word(self, &mut word, out, brk);
+        let mut tail = t.chars().rev();
+        self.open_dash = tail.next() == Some('-') && tail.next().or(self.prev_char).is_some_and(|b| !b.is_whitespace());
+        self.prev_char = t.chars().last().or(self.prev_char);
         if let Some(em) = bg.side_pad(self.th) {
             let pad_l = em * size;
             let pad_r = pad_l;
@@ -1283,7 +1342,10 @@ impl<'a> Layouter<'a> {
                         && let Some(l) = self.page.urls.get(a.link as usize - 1).and_then(|u| u.strip_prefix('#')?.strip_prefix(NOTE))
                     {
                         let key = format!("{BACK}{l}");
-                        self.page.anchors.entry(key).or_insert(*y);
+                        if let std::collections::hash_map::Entry::Vacant(v) = self.page.anchors.entry(key) {
+                            self.fresh_anchors.push(v.key().clone());
+                            v.insert(*y);
+                        }
                     }
                     let (fa, fd) = self.fonts.ascent_descent(a.f);
                     let tx = self.note_text(t);
@@ -1446,6 +1508,17 @@ fn obsidian_color(k: Alert, dark: bool) -> Rgb {
         Alert::Tip | Alert::Important => [0x00bfbc, 0x53dfdd],
     };
     if dark { dk } else { light }
+}
+
+fn edge(b: &Block, pick: fn(&[Block]) -> Option<&Block>) -> &Block {
+    match b {
+        Block::Align(_, bs) => pick(bs).map_or(b, |c| edge(c, pick)),
+        _ => b,
+    }
+}
+
+fn ends_in_head(b: &Block) -> bool {
+    matches!(edge(b, <[Block]>::last), Block::Heading(..) | Block::Rule)
 }
 
 #[cfg(test)]

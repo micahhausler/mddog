@@ -140,7 +140,7 @@ pub enum Block {
         tight: bool,
     },
     Table {
-        aligns: Vec<Align>,
+        aligns: Vec<Option<Align>>,
         head: Vec<Vec<Inline>>,
         rows: Vec<Vec<Vec<Inline>>>,
     },
@@ -184,7 +184,7 @@ enum FrameKind {
     Item,
     List(Option<u64>),
     Details { open: bool, id: usize },
-    Align(Align, String),
+    Align(Option<Align>, String),
     Heading(u8, String),
     Foot(String),
 }
@@ -261,7 +261,7 @@ fn demote(kind: Alert, marker: Option<Marker>, mut blocks: Vec<Block>) -> Block 
 }
 
 struct TableBuilder {
-    aligns: Vec<Align>,
+    aligns: Vec<Option<Align>>,
     head: Vec<Vec<Inline>>,
     rows: Vec<Vec<Vec<Inline>>>,
     row: Vec<Vec<Inline>>,
@@ -379,6 +379,9 @@ impl Builder {
             self.close_frame();
         }
         self.close_frame();
+        if matches!(self.stack.last().map(|f| &f.kind), Some(FrameKind::Align(_, n)) if is_heading(n) && is_heading(name)) {
+            self.close_frame();
+        }
     }
 
     /// Close html frames (details, align) left open inside a markdown container.
@@ -407,12 +410,13 @@ impl Builder {
         let blocks = f.blocks;
         let b = match f.kind {
             FrameKind::Align(a, _) => {
-                if a == Align::Left {
+                let inherited = self.stack.iter().rev().find_map(|f| if let FrameKind::Align(Some(a), _) = f.kind { Some(a) } else { None }).unwrap_or_default();
+                let Some(a) = a.filter(|&a| a != inherited) else {
                     for b in blocks {
                         self.push_block(b);
                     }
                     return;
-                }
+                };
                 Block::Align(a, blocks)
             }
             FrameKind::Details { open, id } => Block::Details { summary: f.summary, open, body: blocks, id },
@@ -492,15 +496,13 @@ impl Builder {
             }
             "div" | "p" | "center" | "section" | "article" | "header" | "footer" | "main" | "nav" | "figure" | "figcaption" | "picture" => {
                 self.flush();
-                let a = match (name, attr("align").as_deref()) {
-                    ("center", _) | (_, Some("center")) => Align::Center,
-                    (_, Some("right")) => Align::Right,
-                    _ => Align::Left,
-                };
-                self.stack.push(frame(FrameKind::Align(a, name.to_string())));
+                self.stack.push(frame(FrameKind::Align(html_align(name, attr("align").as_deref()), name.to_string())));
             }
             "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
                 self.flush();
+                if let Some(a) = html_align(name, attr("align").as_deref()) {
+                    self.stack.push(frame(FrameKind::Align(Some(a), name.to_string())));
+                }
                 let l = name[1..].parse().unwrap_or(1);
                 self.stack.push(frame(FrameKind::Heading(l, String::new())));
             }
@@ -618,6 +620,19 @@ impl Builder {
         self.links.push(url);
         self.links.len() as u32
     }
+}
+
+fn html_align(name: &str, attr: Option<&str>) -> Option<Align> {
+    match (name, attr.map(str::to_ascii_lowercase).as_deref()) {
+        ("center", _) | (_, Some("center")) => Some(Align::Center),
+        (_, Some("right")) => Some(Align::Right),
+        (_, Some("left")) => Some(Align::Left),
+        _ => None,
+    }
+}
+
+fn is_heading(name: &str) -> bool {
+    matches!(name, "h1" | "h2" | "h3" | "h4" | "h5" | "h6")
 }
 
 fn ruby_part(v: Vec<Inline>, links: &mut Vec<String>) -> Vec<Inline> {
@@ -1275,7 +1290,7 @@ impl Builder {
                     *meta = None;
                     if !rows.is_empty() {
                         // Its keys are `th` cells, which browsers center.
-                        b.push_block(Block::Table { aligns: vec![Align::Center, Align::Left], head: vec![], rows });
+                        b.push_block(Block::Table { aligns: vec![Some(Align::Center), Some(Align::Left)], head: vec![], rows });
                     }
                 }
                 _ => {}
@@ -1328,9 +1343,10 @@ impl Builder {
                     let a = al
                         .iter()
                         .map(|a| match a {
-                            pulldown_cmark::Alignment::Center => Align::Center,
-                            pulldown_cmark::Alignment::Right => Align::Right,
-                            _ => Align::Left,
+                            pulldown_cmark::Alignment::Center => Some(Align::Center),
+                            pulldown_cmark::Alignment::Right => Some(Align::Right),
+                            pulldown_cmark::Alignment::Left => Some(Align::Left),
+                            pulldown_cmark::Alignment::None => None,
                         })
                         .collect();
                     b.table = Some(TableBuilder { aligns: a, head: vec![], rows: vec![], row: vec![] });

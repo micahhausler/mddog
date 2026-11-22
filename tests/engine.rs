@@ -188,6 +188,99 @@ fn an_unclosed_summary_keeps_its_text() {
 }
 
 #[test]
+fn a_heading_takes_its_align_attribute() {
+    use mddog::render::doc::{Align, Block};
+    for (attr, want) in [("center", Align::Center), ("right", Align::Right)] {
+        let blocks = mddog::render::doc::parse(&format!("<h1 align=\"{attr}\">\n  Title\n</h1>\n\nafter\n")).blocks;
+        assert!(matches!(&blocks[..], [Block::Align(a, inner), Block::Para(_)] if *a == want && matches!(&inner[..], [Block::Heading(1, ..)])), "{blocks:?}");
+    }
+    let blocks = mddog::render::doc::parse("<h1 align=\"center\">\n  Title\n</h2>\n\nafter\n").blocks;
+    assert!(matches!(&blocks[..], [Block::Align(Align::Center, _), Block::Para(_)]), "another level's end tag still ends the centering: {blocks:?}");
+    for tag in ["h1", "div"] {
+        let blocks = mddog::render::doc::parse(&format!("<div align=\"center\">\n<{tag} align=\"left\">\n\nTitle\n\n</{tag}>\n</div>\n")).blocks;
+        assert!(matches!(&blocks[..], [Block::Align(Align::Center, inner)] if matches!(&inner[..], [Block::Align(Align::Left, _)])), "{tag}: {blocks:?}");
+    }
+}
+
+#[test]
+fn alignment_keeps_heading_spacing() {
+    let height = |src: &str| {
+        let e = Engine::new(640.0, 2.0, false);
+        e.load(src, std::path::Path::new("."), false, mddog::theme::builtin("obsidian-light").unwrap_or_else(|| unreachable!()));
+        e.layout().height
+    };
+    let plain = height("# A\n\n## B\n\n## C\n\ntext\n");
+    assert_eq!(height("# A\n\n<h2 align=\"center\">B</h2>\n\n## C\n\ntext\n"), plain);
+    assert_eq!(height("# A\n\n<div align=\"center\">\n\n## B\n\n</div>\n\n## C\n\ntext\n"), plain);
+    let after_text = height("<div>loose</div>\n\n## B\n\ntext\n");
+    assert_eq!(height("<div>loose</div>\n\n<h2 align=\"center\">B</h2>\n\ntext\n"), after_text);
+    let in_list = height("- one\n- two\n\n  ## B\n");
+    assert_eq!(height("- one\n- two\n\n  <h2 align=\"center\">B</h2>\n"), in_list);
+    let tight = height("- one\n  ## B\n- two\n");
+    assert_eq!(height("- one\n  <h2 align=\"center\">B</h2>\n- two\n"), tight);
+}
+
+#[test]
+fn a_table_lays_out_the_same_at_any_scale() {
+    let src = "| name | what it does |\n|---|:-:|\n| alpha | a long cell that has to wrap across more than one line in the column |\n| b | ok |\n";
+    let at = |scale: f64| {
+        let e = Engine::new(640.0, scale, false);
+        e.load(src, std::path::Path::new("."), false, mddog::theme::builtin("github-light").unwrap_or_else(|| unreachable!()));
+        (e.layout().height, e.search("column", None)[0][0])
+    };
+    let one = at(1.0);
+    for scale in [0.5, 2.0] {
+        let other = at(scale);
+        assert!((other.0 - one.0).abs() <= 1.0 / scale && other.1.iter().zip(one.1.iter()).all(|(a, b)| (a - b).abs() < 0.5), "{scale}x: within one device pixel of 1x: {other:?} vs {one:?}");
+    }
+}
+
+#[test]
+fn unaligned_table_headers_center_as_in_a_browser() {
+    let e = engine("| Name | Left |\n|---|:---|\n| a long body cell here | another long body cell |\n");
+    let x = |q: &str| e.search(q, None)[0][0];
+    let (name, body, left, other) = (x("Name"), x("a long body"), x("Left"), x("another"));
+    assert!(name[0] > body[0] + 10.0, "an unaligned header centers: {name:?} vs {body:?}");
+    assert!((left[0] - other[0]).abs() < 1.0, "a left-aligned header stays left: {left:?} vs {other:?}");
+}
+
+#[test]
+fn table_cells_center_vertically() {
+    let e = engine("| a | b |\n|---|---|\n| one<br>two<br>three | solo |\n");
+    let y = |q: &str| e.search(q, None)[0][0];
+    let (top, bottom, solo) = (y("one"), y("three"), y("solo"));
+    let mid = |r: [f64; 4]| r[1] + r[3] / 2.0;
+    assert!((mid(solo) - f64::midpoint(mid(top), mid(bottom))).abs() < 1.0, "{solo:?} sits between {top:?} and {bottom:?}");
+}
+
+#[test]
+fn a_centered_cell_moves_its_footnote_anchor() {
+    let e = engine("| a | b |\n|---|---|\n| one<br>two<br>three | see[^n] |\n\n[^n]: note\n");
+    let mark = e.search("see", None)[0][0];
+    let back = e.anchor_y("fnref-n").unwrap_or_default();
+    assert!((back - mark[1]).abs() < mark[3], "the back link lands on the reference: {back} vs {mark:?}");
+}
+
+#[test]
+fn words_break_after_a_hyphen() {
+    let row = |cell: &str| [cell; 8].join(" | ");
+    let e = engine(&format!("| {} |\n|{}|\n| {} |\n", row("h"), ["---"; 8].join("|"), row("alphabet-soup")));
+    let (first, second) = (e.search("alphabet-", None)[0][0], e.search("soup", None)[0][0]);
+    assert!(second[1] > first[1], "a squeezed column breaks after the hyphen: {first:?} {second:?}");
+    for cell in ["alphabet-**soup**", "alphabet**-soup**"] {
+        let e = engine(&format!("| {} |\n|{}|\n| {} |\n", row("h"), ["---"; 8].join("|"), row(cell)));
+        let (first, second) = (e.search("alphabet", None)[0][0], e.search("soup", None)[0][0]);
+        assert!(second[1] > first[1], "{cell} breaks after the hyphen: {first:?} {second:?}");
+    }
+    let soup = |rt: &str| engine(&format!("| {} |\n|{}|\n| {} |\n", row("h"), ["---"; 8].join("|"), row(&format!("<ruby>A<rt>{rt}</rt></ruby>soupy-word")))).search("soupy", None)[0][0];
+    assert_eq!(soup("x-"), soup("xy"), "a hyphen in ruby text opens no break after the ruby");
+    for word in ["v1-2", "v1-٢", "ab-)"] {
+        let e = engine(&format!("| {} |\n|{}|\n| {} |\n", row("h"), ["---"; 8].join("|"), row(word)));
+        assert_eq!(e.search(word, None)[0].len(), 1, "no break in {word}");
+    }
+}
+
+#[test]
 fn opening_details_fetches_its_remote_images() {
     // Only the first layout's images were fetched, so these stayed loading for good.
     let e = engine("<details><summary>More</summary>\n\n![a](https://example.invalid/a.png)\n\n</details>\n");

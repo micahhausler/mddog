@@ -154,7 +154,7 @@ The viewer has no helper process, no socket, and no daemon. The only programs it
 
 ### Coordinates and scale
 
-There are two units. The engine's API takes and returns CSS pixels. The `Page` and the tiles are in device pixels: CSS pixels times the scale. The scale is the display's backing scale, times the terminal's font zoom. The page is laid out at the scale the viewer draws it at, so nothing is resampled. `Engine::snapshot` can also draw a tile at another scale, which headless mode uses for its small WebP copies.
+There are two units. The engine's API takes and returns CSS pixels. The `Page` and the tiles are in device pixels: CSS pixels times the scale. The scale is the display's backing scale, times the terminal's font zoom. The page is laid out at the scale the viewer draws it at, so nothing is resampled. Text takes the same CSS width at every scale. Two things change with the scale, as they do in Chrome: an emoji is as wide as its picture at the device size, divided by the scale (16 CSS px at 2x and 20 at 1x for 16 px text), and table borders snap to whole device pixels. `Engine::snapshot` can also draw a tile at another scale, which headless mode uses for its small WebP copies.
 
 ### Keeping the place
 

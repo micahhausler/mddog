@@ -1,74 +1,105 @@
 #[cfg(target_os = "macos")]
-macro_rules! copy_key {
-    () => {
-        "Cmd-c  "
-    };
-}
+const COPY: &str = "Cmd-c";
 
 #[cfg(not(target_os = "macos"))]
-macro_rules! copy_key {
-    () => {
-        "Super-c"
-    };
+const COPY: &str = "Super-c";
+
+pub struct Row {
+    pub keys: &'static [&'static str],
+    pub what: &'static str,
 }
 
-pub const KEYS: &str = concat!(
-    "Scroll
-  j k, Down Up            scroll down, up one row (also Ctrl-e Ctrl-y)
-  d u, Ctrl-d Ctrl-u      scroll down, up half a screen
-  Space, PgDn PgUp        scroll down, up a full screen (also Ctrl-b up)
-  gg, G, Home End         go to the top, the bottom of the file
-  h l, Left Right         scroll wide code blocks and tables on screen left, right
-  mouse wheel             scroll 3 rows. Shift + wheel to scroll a code block or table sideways
-  Backspace, Ctrl-o       go back to where you were before a jump, or to the file before
+pub struct Section {
+    pub name: &'static str,
+    pub rows: &'static [Row],
+}
 
-Mouse
-  click a link            open it in the browser, or for a # link, scroll to its heading
-  click a button          copy a code block, open or close <details>, zoom or expand a diagram
-  drag, double-click      select text, select a word
-  ",
-    copy_key!(),
-    "                 copy the selected text
-  drag a scroll bar       scroll that code block or table sideways
-  click the bottom row    run the key named where you click
+const fn row(keys: &'static [&'static str], what: &'static str) -> Row {
+    Row { keys, what }
+}
 
-Search
-  / or Ctrl-f             open the search prompt (Enter to search, Esc to cancel)
-  n N, Enter              go to the next, previous match
-  Esc                     clear the search, or close the contents panel
-  Ctrl-u Ctrl-w           in the prompt: clear the text, delete the last word
-                          All lowercase ignores case. Any uppercase letter makes case count.
-
-Contents
-  t, Ctrl-t               show or hide the contents panel
-  1-9                     jump to the Nth section. Press again to step through its subsections
-  0                       make the next repeated digit step backwards through subsections
-  J K, ]] [[              go to the next, previous section
-  D U, wheel over it      scroll the list in the contents panel (or drag its scroll bar)
-  click an entry          jump to that section
-
-Other
-  f                       label every link and button on screen. Type a label to click it, Esc to cancel
-  w                       wrap or unwrap long lines in code blocks
-  e                       open the file in $EDITOR (default vi), then reload it
-  c                       copy the file's Markdown source to the clipboard
-  ?                       show this list. Press ? or Esc to go back to the page
-  T                       pick a theme: j k to move, Space or a click to try one, Enter to save it, Esc or T to cancel. The page still works meanwhile
-  Ctrl-p                  list Markdown files in this repo or folder: type to filter, Enter to open
-  Ctrl-z                  pause mddog and go back to the shell (fg to resume). Works in the search prompt and help too
-  q, Ctrl-c               quit mddog"
-);
+pub const SECTIONS: &[Section] = &[
+    Section {
+        name: "Scroll",
+        rows: &[
+            row(&["↓", "j", "Ctrl-e"], "Down a line"),
+            row(&["↑", "k", "Ctrl-y"], "Up a line"),
+            row(&["d", "Ctrl-d"], "Down half a screen"),
+            row(&["u", "Ctrl-u"], "Up half a screen"),
+            row(&["Space", "PgDn"], "Down a screen"),
+            row(&["b", "PgUp", "Ctrl-b"], "Up a screen"),
+            row(&["gg", "Home"], "To the top"),
+            row(&["G", "End"], "To the bottom"),
+            row(&["←", "h"], "Wide code and tables left"),
+            row(&["→", "l"], "Wide code and tables right"),
+            row(&["Backspace", "Ctrl-o"], "Back to before a jump or the last file"),
+        ],
+    },
+    Section {
+        name: "Mouse",
+        rows: &[
+            row(&["wheel"], "Scroll 3 lines"),
+            row(&["Shift-wheel", "drag its bar"], "Scroll a code block or table sideways"),
+            row(&["click a link"], "Open it, or go to a # link's heading"),
+            row(&["click a button"], "Copy code, toggle details, zoom diagrams"),
+            row(&["drag"], "Select text"),
+            row(&["double-click"], "Select a word"),
+            row(&[COPY], "Copy the selection"),
+            row(&["click a hint"], "Run the key it names in the bottom row"),
+        ],
+    },
+    Section {
+        name: "Search",
+        rows: &[
+            row(&["/", "Ctrl-f"], "Search the page"),
+            row(&["n", "Enter"], "Next match"),
+            row(&["N"], "Previous match"),
+            row(&["Esc"], "Clear the search or close the contents"),
+            row(&["Ctrl-u"], "In the prompt, clear it"),
+            row(&["Ctrl-w"], "In the prompt, delete a word"),
+        ],
+    },
+    Section {
+        name: "Contents",
+        rows: &[
+            row(&["t", "Ctrl-t"], "Show or hide the table of contents"),
+            row(&["1-9"], "Jump to section N, again for subsections"),
+            row(&["0"], "Make the next digit step backwards"),
+            row(&["J", "]]"], "Next section"),
+            row(&["K", "[["], "Previous section"),
+            row(&["D"], "Scroll the list down"),
+            row(&["U"], "Scroll the list up"),
+            row(&["wheel", "drag its bar"], "Scroll the list"),
+            row(&["click an entry"], "Jump to that section"),
+        ],
+    },
+    Section {
+        name: "Other",
+        rows: &[
+            row(&["Ctrl-p"], "Fuzzy file picker for Markdowns in the current repo or folder"),
+            row(&["e"], "Edit in $EDITOR (vi if unset) and reload"),
+            row(&["c"], "Copy the entire Markdown source"),
+            row(&["f"], "Activate this then type a label to 'click' on a link or button on the page without using your mouse"),
+            row(&["w"], "Wrap long code lines"),
+            row(&["T"], "Theme picker"),
+            row(&["Ctrl-z"], "Pause from anywhere, fg to resume"),
+            row(&["q", "Ctrl-c"], "Quit"),
+        ],
+    },
+];
 
 #[cfg(test)]
 mod tests {
     #[cfg(not(target_os = "macos"))]
     #[test]
     fn linux_names_the_super_key_for_copy() {
-        assert!(super::KEYS.contains("\n  Super-c                 copy the selected text\n") && !super::KEYS.contains("Cmd-c"));
+        let rows = || super::SECTIONS.iter().flat_map(|s| s.rows);
+        assert!(rows().any(|r| r.keys == ["Super-c"]) && !rows().any(|r| r.keys.contains(&"Cmd-c")));
     }
 
     #[test]
     fn the_wheel_line_states_the_wheel_step() {
-        assert!(super::KEYS.contains(&format!("scroll {} rows", super::super::app::WHEEL)));
+        let wheel = super::SECTIONS.iter().flat_map(|s| s.rows).find(|r| r.keys == ["wheel"]).unwrap();
+        assert!(wheel.what.contains(&format!("Scroll {} lines", super::super::app::WHEEL)));
     }
 }

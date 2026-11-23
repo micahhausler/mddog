@@ -160,6 +160,20 @@ pub fn view_rows(rows: u16) -> usize {
     usize::from(rows.saturating_sub(1).max(1))
 }
 
+#[derive(Clone, Copy, Debug)]
+enum Ink {
+    Title,
+    Head,
+    Rule,
+    Key,
+    Text,
+    Muted,
+}
+
+type Line = Vec<(usize, String, Ink)>;
+
+const HELP_GAP: usize = 4;
+
 pub fn help(out: &mut String, cols: u16, rows: u16, top: &mut u32, p: &Palette) {
     let cols = usize::from(cols);
     let rows = view_rows(rows);
@@ -171,45 +185,177 @@ pub fn help(out: &mut String, cols: u16, rows: u16, top: &mut u32, p: &Palette) 
     out.push_str(&format!("{reset}{}", crate::term::CLEAR));
     for r in 0..rows {
         let i = top + r;
-        let Some(l) = lines.get(i) else { break };
+        let Some(line) = lines.get(i) else { break };
         let more = r + 1 == rows && i + 1 < lines.len();
-        let text = if !more {
-            l.clone()
-        } else if cols >= 36 {
-            format!("↓ {} more lines: j k or Space", lines.len() - i)
-        } else {
-            "↓ more: j k".into()
-        };
-        let heading = i == 0 || (i > 0 && lines[i - 1].is_empty() && !l.starts_with(' '));
-        let style = if heading || more { format!("\x1b[1m{}", fg(p.fg_bright)) } else { fg(p.fg_muted) };
-        let (text, _) = term::fit(&term::printable(&text), cols.saturating_sub(2));
-        out.push_str(&format!("\x1b[{};2H{style}{text}{reset}", r + 1));
+        let left = lines.len() - i;
+        let more_line = [(lines[1].first().map_or(1, |s| s.0), if cols >= 36 { format!("↓ {left} more lines: j k or Space") } else { "↓ more: j k".into() }, Ink::Title)];
+        for (x, text, ink) in if more { &more_line[..] } else { &line[..] } {
+            let style = match ink {
+                Ink::Title => format!("\x1b[1m{}", fg(p.fg_bright)),
+                Ink::Head => format!("\x1b[1m{}", fg(p.fg_bright)),
+                Ink::Rule => fg(p.border),
+                Ink::Key => fg(p.link),
+                Ink::Text => fg(p.fg),
+                Ink::Muted => fg(p.fg_muted),
+            };
+            let (text, _) = term::fit(&term::printable(text), cols.saturating_sub(*x));
+            out.push_str(&format!("\x1b[{};{}H{style}{text}{reset}", r + 1, x + 1));
+        }
     }
 }
 
-fn help_lines(cols: usize) -> Vec<String> {
-    let full = keys::KEYS.lines().map(|l| term::width(l.trim_end())).max().unwrap_or(0) + 2;
-    let mut lines = vec!["mddog keys. Press ? or Esc to go back to the page".to_string(), String::new()];
-    for l in keys::KEYS.lines().map(str::trim_end) {
-        let t = l.trim_start();
-        match (full > cols && l.starts_with("  ")).then(|| t.split_once("  ").unwrap_or(("", t))) {
-            Some((k, d)) => {
-                if !k.is_empty() {
-                    lines.push(format!("  {k}"));
-                }
-                let mut line = String::from("     ");
-                for w in d.split_whitespace() {
-                    if term::width(&line) + 1 + term::width(w) > cols.saturating_sub(2) && !line.trim().is_empty() {
-                        lines.push(std::mem::replace(&mut line, String::from("     ")));
-                    }
-                    line.push(' ');
-                    line.push_str(w);
-                }
-                lines.push(line);
+fn wrap(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    for word in text.split_whitespace() {
+        let mut w = word.to_string();
+        while term::width(&w) > width {
+            if !line.is_empty() {
+                lines.push(std::mem::take(&mut line));
             }
-            None => lines.push(l.to_string()),
+            let (head, _) = term::fit(&w, width);
+            let n = head.chars().count().max(1);
+            lines.push(head);
+            w = w.chars().skip(n).collect();
         }
+        if w.is_empty() {
+            continue;
+        }
+        if !line.is_empty() && term::width(&line) + 1 + term::width(&w) > width {
+            lines.push(std::mem::take(&mut line));
+        }
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        line.push_str(&w);
     }
+    if !line.is_empty() || lines.is_empty() {
+        lines.push(line);
+    }
+    lines
+}
+
+struct Columns {
+    key: usize,
+    action: usize,
+}
+
+type Cell = Vec<Line>;
+
+impl Columns {
+    fn fit(width: usize) -> Columns {
+        let inner = width.saturating_sub(3);
+        let widest = keys::SECTIONS.iter().flat_map(|s| s.rows).map(|r| term::width(&r.keys.join(" or "))).max().unwrap_or(1);
+        let key = widest.min(inner / 3).max(1);
+        Columns { key, action: inner.saturating_sub(key).max(1) }
+    }
+
+    fn row(&self, key: Cell, action: Cell) -> Vec<Line> {
+        let height = key.len().max(action.len());
+        (0..height)
+            .map(|i| {
+                let mut line = Line::new();
+                for (x, cell) in [(1, &key), (self.key + 3, &action)] {
+                    line.extend(cell.get(i).into_iter().flatten().filter(|(_, t, _)| !t.is_empty()).map(|(at, t, ink)| (x + at, t.clone(), *ink)));
+                }
+                line
+            })
+            .collect()
+    }
+}
+
+fn cell(lines: Vec<String>, ink: Ink) -> Cell {
+    lines.into_iter().map(|l| vec![(0, l, ink)]).collect()
+}
+
+fn key_cell(keys: &[&str], width: usize) -> Cell {
+    let mut lines: Cell = vec![vec![]];
+    let mut at = 0;
+    for (i, k) in keys.iter().enumerate() {
+        let or = if i > 0 { 3 } else { 0 };
+        let w = term::width(k);
+        if at > 0 && at + 1 + or + w > width {
+            lines.push(vec![]);
+            at = 0;
+        }
+        let x = if at > 0 { at + 1 } else { 0 };
+        if or + w > width {
+            if or > 0 {
+                lines.last_mut().into_iter().for_each(|l| l.push((x, "or".into(), Ink::Muted)));
+                lines.push(vec![]);
+            }
+            let parts = wrap(k, width);
+            let n = parts.len();
+            for (j, part) in parts.into_iter().enumerate() {
+                at = term::width(&part);
+                if let Some(l) = lines.last_mut() {
+                    l.push((0, part, Ink::Key));
+                }
+                if j + 1 < n {
+                    lines.push(vec![]);
+                }
+            }
+            continue;
+        }
+        let line = lines.last_mut().into_iter();
+        for l in line {
+            if or > 0 {
+                l.push((x, "or".into(), Ink::Muted));
+            }
+            l.push((x + or, k.to_string(), Ink::Key));
+        }
+        at = x + or + w;
+    }
+    lines
+}
+
+fn help_block(sec: &keys::Section, width: usize, cols: &Columns) -> Vec<Line> {
+    let name = term::width(sec.name);
+    let mut lines: Vec<Line> = vec![vec![(0, sec.name.to_string(), Ink::Head), (name + 1, "─".repeat(width.saturating_sub(name + 1)), Ink::Rule)], vec![]];
+    for row in sec.rows {
+        lines.extend(cols.row(key_cell(row.keys, cols.key), cell(wrap(row.what, cols.action), Ink::Text)));
+    }
+    lines
+}
+
+fn shift(line: Line, by: usize) -> Line {
+    line.into_iter().map(|(x, t, i)| (x + by, t, i)).collect()
+}
+
+fn help_lines(cols: usize) -> Vec<Line> {
+    let margin = if cols >= 60 { 3 } else { 1 };
+    let usable = cols.saturating_sub(2 * margin);
+    let two = cols >= 120;
+    let width = if two { ((usable - HELP_GAP) / 2).min(80) } else { usable.min(80) };
+    let x0 = (cols.saturating_sub(if two { 2 * width + HELP_GAP } else { width })) / 2;
+    let columns = Columns::fit(width);
+    let blocks: Vec<Vec<Line>> = keys::SECTIONS.iter().map(|s| help_block(s, width, &columns)).collect();
+    let mut lines: Vec<Line> = vec![vec![], vec![(x0, "Keys".into(), Ink::Title)]];
+    lines.extend(wrap("Press ? or Esc to go back to the page", cols.saturating_sub(x0 + 1)).into_iter().map(|l| vec![(x0, l, Ink::Muted)]));
+    lines.push(vec![]);
+    let stack = |bs: &[Vec<Line>]| -> Vec<Line> {
+        let mut v = Vec::new();
+        for (i, b) in bs.iter().enumerate() {
+            if i > 0 {
+                v.push(vec![]);
+            }
+            v.extend(b.iter().cloned());
+        }
+        v
+    };
+    if two {
+        let split = (1..blocks.len()).min_by_key(|&k| stack(&blocks[..k]).len().max(stack(&blocks[k..]).len())).unwrap_or(1);
+        let (left, right) = (stack(&blocks[..split]), stack(&blocks[split..]));
+        for i in 0..left.len().max(right.len()) {
+            let mut line = shift(left.get(i).cloned().unwrap_or_default(), x0);
+            line.extend(shift(right.get(i).cloned().unwrap_or_default(), x0 + width + HELP_GAP));
+            lines.push(line);
+        }
+    } else {
+        lines.extend(stack(&blocks).into_iter().map(|l| shift(l, x0)));
+    }
+    lines.push(vec![]);
     lines
 }
 
@@ -236,7 +382,7 @@ mod tests {
         Chrome { app: &app, name: "a.md", cols: 80, rows: 8, img_col: 26, palette: light }.draw(&mut out);
         help(&mut out, 80, 8, &mut 0, &light);
         let grounds = [light.bg, light.bar_bg, light.selection_bg];
-        let inks = [light.fg_muted, light.fg_bright, light.border];
+        let inks = [light.fg_muted, light.fg_bright, light.border, light.fg, light.link];
         let drawn = colors(&out);
         assert!(drawn.contains(&light.bar_bg) && drawn.contains(&light.selection_bg) && drawn.contains(&light.border));
         assert!(drawn.iter().all(|c| grounds.contains(c) || inks.contains(c)), "{drawn:?}");
@@ -340,14 +486,33 @@ mod tests {
     }
 
     #[test]
-    fn help_wraps_when_narrow_and_clamps_its_top() {
-        assert!(help_lines(30).len() > help_lines(200).len());
+    fn help_fits_any_width_and_clamps_its_top() {
+        assert!(help_lines(40).len() > help_lines(120).len());
         let mut top = 10_000;
         help(&mut String::new(), 80, 10, &mut top, &dark());
         assert_eq!(top as usize, help_lines(80).len() - 9);
-        for cols in [40, 80] {
-            let long = help_lines(cols).into_iter().skip(1).find(|l| term::width(l) > cols - 2);
-            assert!(long.is_none(), "{long:?} doesn't fit {cols} columns");
+        for cols in [24, 30, 46, 80, 96, 140, 200] {
+            for line in help_lines(cols) {
+                let mut end = 0;
+                for (x, text, _) in &line {
+                    assert!(*x >= end, "{cols} columns: {line:?} overlaps");
+                    end = x + term::width(text);
+                }
+                assert!(end <= cols, "{cols} columns: {line:?} is too wide");
+            }
         }
+    }
+
+    #[test]
+    fn help_colors_the_keys_and_marks_their_alternates() {
+        let p = dark();
+        let mut out = String::new();
+        help(&mut out, 120, 200, &mut 0, &p);
+        assert!(out.contains(&format!("{}Ctrl-p", fg(p.link))) && !out.contains(&format!("\x1b[1m{}Ctrl-p", fg(p.link))));
+        assert!(out.contains(&format!("{}or{}", fg(p.fg_muted), p.reset())) && out.contains(&format!("{}Ctrl-e", fg(p.link))));
+        assert!(out.contains(&format!("{}──", fg(p.border))) && !out.contains("┌") && !out.contains("│"));
+        assert!(out.contains(&format!("\x1b[1m{}Scroll", fg(p.fg_bright))));
+        assert!(!out.contains(&bg(p.selection_bg)));
+        assert!(!out.contains("more lines"));
     }
 }

@@ -38,6 +38,7 @@ pub struct Palette {
     pub bar_bg: Rgb,
     pub border: Rgb,
     pub skeleton: Rgb,
+    pub link: Rgb,
 }
 
 impl Palette {
@@ -46,7 +47,17 @@ impl Palette {
             Some(Value::Color(c)) => *c,
             v => panic!("{name} is {v:?}, not a color"),
         };
-        Palette { bg: c("bg"), fg: c("fg"), fg_muted: c("fg-muted"), fg_bright: c("fg-bright"), selection_bg: c("selection-bg"), bar_bg: c("bar-bg"), border: c("border"), skeleton: c("skeleton") }
+        Palette {
+            bg: c("bg"),
+            fg: c("fg"),
+            fg_muted: c("fg-muted"),
+            fg_bright: c("fg-bright"),
+            selection_bg: c("selection-bg"),
+            bar_bg: c("bar-bg"),
+            border: c("border"),
+            skeleton: c("skeleton"),
+            link: c("link"),
+        }
     }
 
     /// Resets the SGR attributes and sets the background back to the theme's.

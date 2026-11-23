@@ -609,7 +609,7 @@ fn hints_work_while_help_shows() {
     wait_for(&out, 0, b"a=p,");
     let click = |tty: &mut std::fs::File, col: u16| tty.write_all(format!("\x1b[<0;{col};40M\x1b[<0;{col};40m").as_bytes()).unwrap();
     click(&mut tty, 64);
-    wait_for(&out, 0, b"mddog keys");
+    wait_for(&out, 0, b"Press ? or Esc");
     std::thread::sleep(Duration::from_millis(300));
     let before = out.lock().unwrap().len();
     tty.write_all(b"j").unwrap();
@@ -629,7 +629,7 @@ fn closing_help_sends_the_page_again() {
     let Viewer { mut child, mut tty, out } = open(GFM, 70, &[]);
     wait_for(&out, 0, b"a=p,");
     tty.write_all(b"?").unwrap();
-    wait_for(&out, 0, b"mddog keys");
+    wait_for(&out, 0, b"Press ? or Esc");
     let closed = quiet(&out);
     tty.write_all(b"?").unwrap();
     let place = wait_for(&out, closed, b"a=p,i=");
@@ -796,7 +796,7 @@ fn help_follows_the_terminal_scheme() {
     std::thread::sleep(Duration::from_millis(500));
     let before = out.lock().unwrap().len();
     tty.write_all(b"?").unwrap();
-    let keys = wait_for(&out, before, b"mddog keys");
+    let keys = wait_for(&out, before, b"Press ? or Esc");
     let clear = format!("{}\x1b[H\x1b[J", mddog::theme::builtin("github-light").unwrap().palette.reset());
     let light = find(&out.lock().unwrap()[before..keys], clear.as_bytes()).is_some();
     tty.write_all(b"q").unwrap();
@@ -858,7 +858,7 @@ fn help_follows_an_appearance_change() {
     std::thread::sleep(Duration::from_millis(500));
     let before = out.lock().unwrap().len();
     tty.write_all(b"?").unwrap();
-    let keys = wait_for(&out, before, b"mddog keys");
+    let keys = wait_for(&out, before, b"Press ? or Esc");
     let clear = format!("{}\x1b[H\x1b[J", mddog::theme::builtin("obsidian-dark").unwrap().palette.reset());
     let dark = find(&out.lock().unwrap()[before..keys], clear.as_bytes()).is_some();
     tty.write_all(b"q").unwrap();
@@ -875,7 +875,7 @@ fn help_flag_points_to_the_key_screen() {
     let text = String::from_utf8(out.stdout).unwrap();
     assert!(out.status.success());
     assert!(text.contains("press ? to list the keys"), "{text}");
-    assert!(!text.contains(mddog::viewer::keys::KEYS.lines().nth(1).unwrap()), "{text}");
+    assert!(!text.contains(mddog::viewer::keys::SECTIONS[0].rows[0].what), "{text}");
 }
 
 #[test]

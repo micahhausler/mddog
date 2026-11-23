@@ -14,7 +14,9 @@
   Real Markdown, right in your terminal
 </p>
 
-https://github.com/user-attachments/assets/bf496fc9-b348-47e7-bbad-5c2874194c61
+<p align="center">
+  <a href="https://github.com/user-attachments/assets/bf496fc9-b348-47e7-bbad-5c2874194c61"><img src="assets/demo.webp" width="100%" alt="mddog rendering Markdown in the terminal"/></a>
+</p>
 
 ## Why mddog?
 

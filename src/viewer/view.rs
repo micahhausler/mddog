@@ -1214,9 +1214,11 @@ impl Viewer {
             Link::Open(url) => {
                 let shown = format!("Opened {url}");
                 let tx = self.tx.clone();
-                match link::open(url, move |m| drop(tx.send(Event::Notice(m)))) {
-                    Ok(()) => self.notify(&shown),
-                    Err(e) => self.notify(&e),
+                if let Err(e) = link::open(url.clone(), move |m| drop(tx.send(Event::Notice(m)))) {
+                    self.copy_text(&url);
+                    self.notify(&format!("Copied {url}: {e}"));
+                } else {
+                    self.notify(&shown);
                 }
                 false
             }

@@ -18,6 +18,13 @@ copy_on_select = false
 # a fold marker (+ or -), and nested callouts.
 callouts = "github"
 
+# The command that opens web and mail links, with the link added as its last argument,
+# or put where an argument says {url}. The default is ["open"] on macOS and ["xdg-open"] on Linux.
+# Change it when mddog runs on another machine than the one you sit at, so links open in front
+# of you. The link comes from the file, so never pass it to ssh as an argument, which runs it
+# through a shell. Send it as input instead:
+# open_command = ["sh", "-c", "printf '%s\\n' \"$0\" | ssh my-laptop 'read -r u && open \"$u\"'", "{url}"]
+
 # The page's widest width, in terminal cells. A wider window centers the page, with equal margins on each side.
 # 100 sits between GitHub's file view (1012 px, about 120 characters) and Obsidian's readable line length
 # (700 px, about 85 to 90 characters). Use 20 or more, or a large number such as 10000 for no cap.

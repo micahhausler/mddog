@@ -13,6 +13,7 @@ This is a config with every key at its default value:
 theme = "light:github-light,dark:github-dark"
 copy_on_select = false
 callouts = "github"
+open_command = ["open"] # ["xdg-open"] on Linux
 max_width = 100
 
 [file_list]
@@ -79,6 +80,20 @@ Set it to `"obsidian"` to read callouts as [Obsidian](https://help.obsidian.md/c
 > [!faq]- A folded callout with a title
 > Click the title to open it.
 ```
+
+## `open_command`
+
+The command that opens web and mail links, from a click or a [link label](/docs/keys#links-and-buttons). mddog adds the link as the last argument. To put it somewhere else, write `{url}` where it goes.
+
+The default, `["open"]` on macOS or `["xdg-open"]` on Linux, opens the link on the machine where mddog runs. When you use mddog on another machine, such as over SSH or a remote terminal session, that machine isn't the one in front of you. Set a command that sends the link back to the machine you sit at:
+
+```toml
+open_command = ["sh", "-c", "printf '%s\\n' \"$0\" | ssh my-laptop 'read -r u && open \"$u\"'", "{url}"]
+```
+
+That needs SSH from the remote machine back to yours. If the command fails within 30 seconds, the status row shows the last line of its error output. If the command isn't installed, mddog copies the link instead. If your command runs an app on this machine and waits for it, add `2>/dev/null` to it, so the app's log doesn't collect in mddog's temp file.
+
+The link comes from the file you're reading, so treat it as untrusted. Never pass it to `ssh` as an argument, as in `["ssh", "my-laptop", "open"]`: `ssh` joins its arguments into a shell command on the other machine, so a link with `;` or `$(...)` in it would run commands there. The command above sends the link as input instead.
 
 ## `max_width`
 

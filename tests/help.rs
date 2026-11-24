@@ -1641,6 +1641,21 @@ fn f_with_nothing_to_click_says_so() {
 }
 
 #[test]
+fn a_failed_open_command_shows_its_error() {
+    let dir = scratch("openfail");
+    std::fs::write(dir.join("mddog/config.toml"), "open_command = [\"sh\", \"-c\", \"echo no route to host >&2; exit 3\"]\n").unwrap();
+    std::fs::write(dir.join("a.md"), "[web](https://example.com)\n").unwrap();
+    let a = dir.join("a.md");
+    let Viewer { mut child, mut tty, out } = open(a.to_str().unwrap(), 80, &[("XDG_CONFIG_HOME", dir.to_str().unwrap())]);
+    let shown = wait_for(&out, 0, b"a=p,");
+    tty.write_all(b"fs").unwrap();
+    wait_for(&out, shown, b"no route to host");
+    tty.write_all(b"q").unwrap();
+    assert_eq!(exits_within(&mut child, LIMIT), Some(true));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn a_click_on_nothing_takes_the_labels_off_the_screen() {
     let dir = scratch("labelclick");
     std::fs::write(dir.join("a.md"), format!("[web](https://example.com)\n\n{}", "plain text\n\n".repeat(40))).unwrap();
@@ -1694,6 +1709,22 @@ fn a_reload_while_labels_show_does_not_turn_the_next_key_into_a_command() {
     tty.write_all(b"e").unwrap();
     std::thread::sleep(Duration::from_millis(1000));
     assert!(!marker.exists(), "the key after a reload opened the editor");
+    tty.write_all(b"q").unwrap();
+    assert_eq!(exits_within(&mut child, LIMIT), Some(true));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_link_with_no_opener_installed_is_copied_instead() {
+    let dir = scratch("noopener");
+    std::fs::write(dir.join("mddog/config.toml"), "open_command = [\"mddog-no-such-opener\"]\n").unwrap();
+    std::fs::write(dir.join("a.md"), "[web](https://example.com)\n").unwrap();
+    let a = dir.join("a.md");
+    let Viewer { mut child, mut tty, out } = open(a.to_str().unwrap(), 80, &[("XDG_CONFIG_HOME", dir.to_str().unwrap())]);
+    let shown = wait_for(&out, 0, b"a=p,");
+    tty.write_all(b"fs").unwrap();
+    let copied = wait_for(&out, shown, b"\x1b]52;c;aHR0cHM6Ly9leGFtcGxlLmNvbQ==");
+    wait_for(&out, copied, b"Copied https://example.com: mddog-no-such-opener is not installed");
     tty.write_all(b"q").unwrap();
     assert_eq!(exits_within(&mut child, LIMIT), Some(true));
     let _ = std::fs::remove_dir_all(&dir);

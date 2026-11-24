@@ -150,7 +150,7 @@ The file list's preview (`viewer/preview.rs`) is the one exception to "only the 
 
 Headless mode has the same rule: the engine and every snapshot stay on its main thread. Besides the engine's own workers, it has a signal thread, the file watcher, and threads that encode the image files.
 
-The viewer has no helper process, no socket, and no daemon. The only programs it runs are `$EDITOR` (through `sh -c`), `pbcopy` on macOS or `wl-copy`, `xclip` or `xsel` on Linux to copy, and `open` on macOS or `xdg-open` on Linux for web and mail links.
+The viewer has no helper process, no socket, and no daemon. The only programs it runs are `$EDITOR` (through `sh -c`), `pbcopy` on macOS or `wl-copy`, `xclip` or `xsel` on Linux to copy, and the config's `open_command` (`open` on macOS or `xdg-open` on Linux by default) for web and mail links.
 
 ### Coordinates and scale
 
@@ -171,6 +171,7 @@ mddog has no database and never writes the file it shows. It writes:
 - a copy of standard input, removed on exit.
 - tile files for the terminal, which the terminal deletes.
 - headless tiles in a private folder, removed on exit.
+- the error output of each custom `open_command` run, to a private file deleted as soon as it is opened, so the command can still write to it after mddog quits. The default opener's error output goes nowhere, since `xdg-open` can run the browser and its log.
 - the remote image cache.
 
 Each temp name holds the pid of the run that made it. A SIGKILL skips cleanup, and Claude Code kills the headless process on every pane resize. So `sweep` runs once after the first paint. It removes only the temp files whose pid is gone, and the remote cache files that are too old.

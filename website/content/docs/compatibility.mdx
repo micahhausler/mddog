@@ -32,3 +32,4 @@ description: Which terminal emulators and multiplexers mddog runs in, and how to
 - Web images need the `ca-certificates` package. Without it, mddog shows each image's alt text
 - If the page looks too big or too small, set `MDDOG_SCALE`, for example `MDDOG_SCALE=1.5 mdd README.md`
 - mddog copies with `wl-copy` (package `wl-clipboard`), `xclip` or `xsel`, and also through the terminal with OSC 52. Without any of them, copying works only in terminals that support OSC 52
+- Links open with `xdg-open` (package `xdg-utils`). Without it, as on a server, mddog copies the link instead, so you can paste it into a browser on your own machine. To send links somewhere else, set [`open_command`](/docs/config#open_command)

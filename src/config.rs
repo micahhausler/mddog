@@ -14,6 +14,8 @@ pub struct Config {
     /// How `> [!kind]` blocks read.
     pub callouts: Callouts,
     pub max_width: MaxWidth,
+    #[serde(deserialize_with = "open_command")]
+    pub open_command: Vec<String>,
     pub file_list: FileList,
     /// The `theme` key's themes, read.
     #[serde(skip)]
@@ -24,7 +26,7 @@ impl Default for Config {
     fn default() -> Config {
         let theme = ThemeSpec::default();
         let themes = theme.load(Path::new("")).expect("built-in themes");
-        Config { theme, copy_on_select: false, callouts: Callouts::Github, max_width: MaxWidth(100), file_list: FileList::default(), themes }
+        Config { theme, copy_on_select: false, callouts: Callouts::Github, max_width: MaxWidth(100), file_list: FileList::default(), open_command: default_open_command(), themes }
     }
 }
 
@@ -56,6 +58,19 @@ impl FileList {
             [rest @ .., last] => format!("{}, or {last}", rest.join(", ")),
         }
     }
+}
+
+pub fn default_open_command() -> Vec<String> {
+    vec![if cfg!(target_os = "macos") { "open" } else { "xdg-open" }.into()]
+}
+
+fn open_command<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
+    use serde::de::Error;
+    let cmd = Vec::<String>::deserialize(d)?;
+    if cmd.first().is_none_or(String::is_empty) {
+        return Err(D::Error::custom("needs a program to run, such as [\"open\"]"));
+    }
+    Ok(cmd)
 }
 
 fn extensions<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
@@ -706,6 +721,16 @@ mod tests {
         assert_eq!((c.themes.light.name.as_str(), c.themes.dark), ("github-dark", None));
         assert!(c.copy_on_select);
         assert_eq!(c.callouts, Callouts::Obsidian);
+    }
+
+    #[test]
+    fn open_command() {
+        assert_eq!(parse("").unwrap().open_command, [if cfg!(target_os = "macos") { "open" } else { "xdg-open" }]);
+        assert_eq!(parse("open_command = [\"ssh\", \"mac\", \"open\"]\n").unwrap().open_command, ["ssh", "mac", "open"]);
+        for bad in ["open_command = []\n", "open_command = [\"\"]\n"] {
+            let e = parse(bad).unwrap_err();
+            assert!(e.starts_with("line 1: open_command: "), "{e}");
+        }
     }
 
     #[test]

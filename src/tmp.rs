@@ -35,6 +35,14 @@ pub fn nonce() -> u64 {
     *N.get_or_init(|| std::collections::hash_map::RandomState::new().build_hasher().finish())
 }
 
+pub fn unnamed() -> io::Result<std::fs::File> {
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let path = temp_path("mddog-open-", &format!("-{}", N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+    let file = std::fs::OpenOptions::new().read(true).write(true).create_new(true).mode(0o600).open(&path)?;
+    std::fs::remove_file(&path)?;
+    Ok(file)
+}
+
 pub fn write_private(path: &Path, data: &[u8]) -> io::Result<()> {
     let _ = std::fs::remove_file(path);
     std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(path)?.write_all(data)

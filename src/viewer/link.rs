@@ -1,4 +1,5 @@
 //! Which links the viewer follows, and opening one outside it.
+use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -79,27 +80,75 @@ fn decode(s: &str) -> String {
     crate::render::media::percent_decode(s).unwrap_or_else(|| s.to_string())
 }
 
-const OPENER: &str = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+pub fn argv(cmd: &[String], url: &str) -> Vec<String> {
+    let mut out: Vec<String> = cmd.iter().map(|a| a.replace("{url}", url)).collect();
+    if !cmd.iter().any(|a| a.contains("{url}")) {
+        out.push(url.to_string());
+    }
+    out
+}
 
 fn on_path(name: &str, path: &std::ffi::OsStr) -> bool {
     std::env::split_paths(path).any(|d| std::fs::metadata(d.join(name)).is_ok_and(|m| m.is_file() && std::os::unix::fs::PermissionsExt::mode(&m.permissions()) & 0o111 != 0))
 }
 
 pub fn open(url: String, failed: impl FnOnce(String) + Send + 'static) -> Result<(), String> {
-    if !std::env::var_os("PATH").is_some_and(|p| on_path(OPENER, &p)) {
-        return Err(format!("Can't open links: {OPENER} is not installed"));
+    let cmd = &crate::config::get().open_command;
+    let capture = *cmd != crate::config::default_open_command();
+    let argv = argv(cmd, &url);
+    let prog = &argv[0];
+    if !prog.contains('/') && !std::env::var_os("PATH").is_some_and(|p| on_path(prog, &p)) {
+        return Err(format!("{prog} is not installed"));
     }
-    std::thread::spawn(move || run(OPENER, &url, failed));
+    std::thread::spawn(move || {
+        if let Err(why) = run(&argv, capture) {
+            failed(format!("Can't open {url}: {why}"));
+        }
+    });
     Ok(())
 }
 
-fn run(opener: &str, url: &str, failed: impl FnOnce(String)) {
-    let why = match Command::new(opener).arg(url).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status() {
-        Ok(s) if s.success() => return,
-        Ok(s) => s.code().map_or_else(|| format!("{opener} was stopped"), |c| format!("{opener} exited with {c}")),
-        Err(e) => format!("{opener}: {}", crate::term::io_error(&e)),
+const OPEN_LIMIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+fn run(argv: &[String], capture: bool) -> Result<(), String> {
+    run_for(argv, OPEN_LIMIT, capture)
+}
+
+fn run_for(argv: &[String], limit: std::time::Duration, capture: bool) -> Result<(), String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let prog = &argv[0];
+    let io = |e: std::io::Error| format!("{prog}: {}", crate::term::io_error(&e));
+    let mut log = if capture { Some(crate::tmp::unnamed().map_err(io)?) } else { None };
+    let err_out = match &log {
+        Some(f) => Stdio::from(f.try_clone().map_err(io)?),
+        None => Stdio::null(),
     };
-    failed(format!("Can't open {url}: {why}"));
+    let mut child = Command::new(prog).args(&argv[1..]).process_group(0).stdin(Stdio::null()).stdout(Stdio::null()).stderr(err_out).spawn().map_err(io)?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(child.wait());
+    });
+    let status = match rx.recv_timeout(limit) {
+        Ok(status) => status.map_err(io)?,
+        Err(_) => return Ok(()),
+    };
+    if status.success() {
+        return Ok(());
+    }
+    let mut tail = vec![];
+    if let Some(log) = log.as_mut() {
+        let size = log.seek(SeekFrom::End(0)).unwrap_or(0);
+        if log.seek(SeekFrom::Start(size.saturating_sub(4096))).is_ok() {
+            let _ = log.take(4096).read_to_end(&mut tail);
+        }
+    }
+    match String::from_utf8_lossy(&tail).lines().map(str::trim).rfind(|l| !l.is_empty()) {
+        Some(line) => Err(format!("{prog} failed: {line}")),
+        None => match (status.code(), status.signal()) {
+            (None, Some(sig)) => Err(format!("{prog} was stopped by signal {sig}")),
+            (code, _) => Err(format!("{prog} exited with {}", code.unwrap_or(-1))),
+        },
+    }
 }
 
 #[cfg(test)]
@@ -108,11 +157,8 @@ mod tests {
 
     #[test]
     fn a_failed_open_says_why() {
-        let (tx, rx) = std::sync::mpsc::channel();
-        run("true", "https://example.com", |m| tx.send(m).unwrap());
-        assert!(rx.try_recv().is_err());
-        run("false", "https://example.com", |m| tx.send(m).unwrap());
-        assert_eq!(rx.try_recv().unwrap(), "Can't open https://example.com: false exited with 1");
+        assert_eq!(run(&["true".to_string()], true), Ok(()));
+        assert_eq!(run(&["false".to_string()], false), Err("false exited with 1".into()));
     }
 
     #[test]
@@ -126,6 +172,94 @@ mod tests {
         std::fs::set_permissions(dir.join("opener"), std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
         assert!(on_path("opener", &path));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_command_past_the_limit_is_left_running() {
+        let dir = std::env::temp_dir().join(format!("mddog-open-left-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let marker = dir.join("late");
+        let script = format!("sleep 0.5; touch '{}'", marker.display());
+        let argv = ["sh", "-c", &script].map(String::from);
+        let start = std::time::Instant::now();
+        assert_eq!(run_for(&argv, std::time::Duration::from_millis(200), true), Ok(()));
+        assert!(start.elapsed() < std::time::Duration::from_millis(450), "{:?}", start.elapsed());
+        std::thread::sleep(std::time::Duration::from_millis(1000));
+        assert!(marker.exists(), "the command was stopped instead of left running");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_failure_after_the_limit_is_not_reported() {
+        let argv = ["sh", "-c", "sleep 0.4; exit 3"].map(String::from);
+        assert_eq!(run_for(&argv, std::time::Duration::from_millis(200), true), Ok(()));
+    }
+
+    #[test]
+    fn only_a_custom_command_has_its_errors_captured() {
+        let argv = ["sh", "-c", "[ -f /dev/fd/2 ] && exit 7; exit 0"].map(String::from);
+        assert_eq!(run_for(&argv, std::time::Duration::from_secs(10), false), Ok(()));
+        let argv = ["sh", "-c", "[ -f /dev/fd/2 ] || exit 7; exit 0"].map(String::from);
+        assert_eq!(run_for(&argv, std::time::Duration::from_secs(10), true), Ok(()));
+    }
+
+    #[test]
+    fn the_open_command_leads_its_own_process_group() {
+        let argv = ["sh", "-c", "[ \"$(ps -o pgid= -p $$ | tr -d ' ')\" = \"$$\" ] || exit 7"].map(String::from);
+        assert_eq!(run_for(&argv, std::time::Duration::from_secs(10), true), Ok(()));
+    }
+
+    #[test]
+    fn a_noisy_failed_open_command_reports_its_last_line() {
+        let script = "head -c 300000 /dev/zero | tr '\\0' x >&2; echo >&2; echo 'last line' >&2; exit 1";
+        let argv = ["sh", "-c", script].map(String::from);
+        assert_eq!(run_for(&argv, std::time::Duration::from_secs(10), true), Err("sh failed: last line".into()));
+    }
+
+    #[test]
+    fn a_failure_is_reported_while_a_child_still_runs() {
+        let argv = ["sh", "-c", "sleep 3 & exit 3"].map(String::from);
+        let start = std::time::Instant::now();
+        assert_eq!(run_for(&argv, std::time::Duration::from_secs(10), true), Err("sh exited with 3".into()));
+        assert!(start.elapsed() < std::time::Duration::from_secs(2), "{:?}", start.elapsed());
+    }
+
+    #[test]
+    fn a_failure_keeps_its_error_while_a_child_still_runs() {
+        let argv = ["sh", "-c", "echo boom >&2; sleep 3 & exit 3"].map(String::from);
+        let start = std::time::Instant::now();
+        assert_eq!(run_for(&argv, std::time::Duration::from_secs(10), true), Err("sh failed: boom".into()));
+        assert!(start.elapsed() < std::time::Duration::from_secs(2), "{:?}", start.elapsed());
+    }
+
+    #[test]
+    fn the_open_command_writes_its_errors_where_a_quit_cannot_break_them() {
+        let argv = ["sh", "-c", "[ -p /dev/fd/2 ] && exit 7; exit 0"].map(String::from);
+        assert_eq!(run_for(&argv, std::time::Duration::from_secs(10), true), Ok(()));
+    }
+
+    #[test]
+    fn an_open_command_killed_by_a_signal_says_so() {
+        let argv = ["sh", "-c", "kill -TERM $$"].map(String::from);
+        assert_eq!(run_for(&argv, std::time::Duration::from_secs(10), true), Err("sh was stopped by signal 15".into()));
+    }
+
+    #[test]
+    fn a_failed_open_command_says_why() {
+        let cmd = |v: &[&str]| v.iter().map(ToString::to_string).collect::<Vec<_>>();
+        assert_eq!(run(&cmd(&["true"]), true), Ok(()));
+        assert_eq!(run(&cmd(&["sh", "-c", "echo first >&2; echo 'no route to host' >&2; exit 3"]), true), Err("sh failed: no route to host".into()));
+        assert_eq!(run(&cmd(&["sh", "-c", "exit 4"]), true), Err("sh exited with 4".into()));
+        let missing = run(&cmd(&["mddog-no-such-program"]), true).unwrap_err();
+        assert!(missing.starts_with("mddog-no-such-program: "), "{missing}");
+    }
+
+    #[test]
+    fn the_url_goes_last_or_where_the_command_says() {
+        let cmd = |v: &[&str]| v.iter().map(ToString::to_string).collect::<Vec<_>>();
+        assert_eq!(argv(&cmd(&["open"]), "https://a.dev"), cmd(&["open", "https://a.dev"]));
+        assert_eq!(argv(&cmd(&["ssh", "mac", "open"]), "https://a.dev"), cmd(&["ssh", "mac", "open", "https://a.dev"]));
+        assert_eq!(argv(&cmd(&["rex", "do", "open_url", "url={url}", "x"]), "https://a.dev"), cmd(&["rex", "do", "open_url", "url=https://a.dev", "x"]));
     }
 
     #[test]

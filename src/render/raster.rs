@@ -2,7 +2,7 @@
 use crate::render::canvas::Canvas;
 use crate::render::icons;
 use crate::render::page::*;
-use crate::render::text::Fonts;
+use crate::render::text::{BOLD, FontKey, Fonts};
 use crate::render::theme::{Rgb, Theme};
 use std::rc::Rc;
 
@@ -18,6 +18,28 @@ pub struct Overlay {
     pub hover_btn: Option<usize>,
     pub copied_btn: Option<usize>,
     pub expanded: Option<Expanded>,
+    pub labels: Vec<Label>,
+}
+
+#[derive(Clone)]
+pub struct Label {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    pub text: String,
+    pub typed: usize,
+}
+
+impl Label {
+    pub fn font(scale: f32) -> FontKey {
+        FontKey::new(11.0 * scale, BOLD)
+    }
+
+    pub fn bounds(&self, scale: f32) -> (f32, f32, f32, f32) {
+        let blur = 8.0 * scale;
+        (self.x - blur, self.y - blur, self.w + 2.0 * blur, self.h + 2.0 * blur + 3.0 * scale)
+    }
 }
 
 /// An expanded diagram over the view: the box it covers and the diagram, drawn to fit it (device px).
@@ -213,6 +235,44 @@ pub fn render_into(fonts: &mut Fonts, cx: &Ctx, top: f32, h: usize, w: usize, it
         ctx.fill_color(cx.th.sel_bg, 0.6);
         ctx.fill_rect(x as f64, y as f64, w as f64, hh as f64);
     }
+    let f = Label::font(cx.scale);
+    for l in &cx.ov.labels {
+        let (_, by, _, bh) = l.bounds(cx.scale);
+        if by > top + h as f32 || by + bh < top {
+            continue;
+        }
+        let (x, y, w, hh) = (f64::from(l.x), f64::from(l.y), f64::from(l.w), f64::from(l.h));
+        let r = 3.0 * s;
+        for i in 1..=3 {
+            let d = f64::from(i) * s;
+            ctx.fill_color(0x000000, 0.08);
+            rrect(ctx, x - d / 2.0, y + d, w + d, hh, r + d / 2.0);
+            ctx.fill_path();
+        }
+        ctx.fill_color(cx.th.hint_border, 1.0);
+        rrect(ctx, x, y, w, hh, r);
+        ctx.fill_path();
+        let (ix, iy, iw, ih, ir) = (x + s, y + s, w - 2.0 * s, hh - 2.0 * s, (r - s).max(0.0));
+        let rows = (ih * z).ceil().max(1.0) as usize;
+        let step = ih / rows as f64;
+        for i in 0..rows {
+            let t = i as f64 / (rows - 1).max(1) as f64;
+            let row = iy + step * i as f64;
+            let mid = row + step / 2.0;
+            let dy = (iy + ir - mid).max(mid - (iy + ih - ir)).max(0.0);
+            let inset = ir - (ir * ir - dy * dy).max(0.0).sqrt();
+            ctx.fill_color(mix(cx.th.hint_bg.0, cx.th.hint_bg.1, t), 1.0);
+            ctx.fill_rect(ix + inset, row, iw - 2.0 * inset, step);
+        }
+        let (a, _) = fonts.ascent_descent(f);
+        let mut tx = l.x + 4.0 * cx.scale;
+        for (i, c) in l.text.chars().enumerate() {
+            ctx.fill_color(if i < l.typed { cx.th.hint_fg_typed } else { cx.th.hint_fg }, 1.0);
+            let c = c.to_ascii_uppercase().to_string();
+            fonts.draw(ctx, f, &c, tx, l.y + 2.0 * cx.scale + a);
+            tx += fonts.measure(f, &c);
+        }
+    }
     if let Some(e) = &cx.ov.expanded
         && e.y <= top + h as f32
         && e.y + e.h >= top
@@ -302,4 +362,9 @@ fn draw_code_button(ctx: &mut Canvas, cx: &Ctx, b: &Button, hover: bool, copied:
         ctx.fill_color(cx.th.pre_bg, 1.0);
         ctx.fill_stroke_path();
     }
+}
+
+fn mix(a: Rgb, b: Rgb, t: f64) -> Rgb {
+    let ch = |v: Rgb, sh: u32| f64::from((v >> sh) & 255);
+    [16, 8, 0].iter().fold(0, |out, &sh| out | ((ch(a, sh) + (ch(b, sh) - ch(a, sh)) * t).round() as u32) << sh)
 }

@@ -9,6 +9,7 @@ use super::app::{self, Action, App, Heading, Notice, OnClick};
 use super::cache::{Batch, Cache, Pixels, View};
 use super::chrome::{self, Chrome};
 use super::clipboard;
+use super::labels::Labels;
 use super::link::{self, Link};
 use super::loading::Loader;
 use super::picker::{self, Area, Pick, Picker};
@@ -174,6 +175,7 @@ pub struct Viewer {
     drag: Option<Drag>,
     bar_held: bool,
     last_press: Option<(Instant, u16, u16)>,
+    targets: Vec<Rect>,
     /// The pointer shape last sent with OSC 22.
     pointer: &'static str,
     /// Where the last move was hit-tested, with the scroll it was drawn at, so a repeat does nothing.
@@ -234,7 +236,7 @@ pub fn run(file: PathBuf, stdin: bool) -> i32 {
 
 /// Whether input typed during the first render asks to quit, in either key encoding.
 fn quits(input: &[u8]) -> bool {
-    term::parse_keys(&mut input.to_vec(), false).iter().any(|k| matches!(k, Key::Ctrl('c') | Key::Char('q' | 'Q')))
+    term::parse_keys(&mut input.to_vec(), false).iter().any(|k| matches!(k, Key::Ctrl('c') | Key::Char('q')))
 }
 
 /// Starts with the list of Markdown files under `root` instead of a file.
@@ -386,6 +388,7 @@ fn start(file: PathBuf, stdin: bool, list: Option<PathBuf>) -> i32 {
         drag: None,
         bar_held: false,
         last_press: None,
+        targets: vec![],
         pointer: DEFAULT_POINTER,
         hover_at: None,
         hover_page: false,
@@ -710,8 +713,13 @@ impl Viewer {
                 };
                 if let Key::Mouse(click, x, y) = k {
                     // A press ends a glide first, so the press and its release hit the same page.
-                    if click == Click::Press && self.glide.take().is_some() {
-                        self.show();
+                    let mut unlabeled = false;
+                    if click == Click::Press {
+                        let ended = self.app.click();
+                        unlabeled = self.act_all(ended);
+                        if self.glide.take().is_some() {
+                            self.show();
+                        }
                     }
                     let spot = self.spot(x, y);
                     if click != Click::Move {
@@ -722,9 +730,9 @@ impl Viewer {
                     if click != Click::Move
                         && let Some(actions) = self.app.modal_click(click == Click::Press, on_hint)
                     {
-                        return self.act_all(actions);
+                        return self.act_all(actions) | unlabeled;
                     }
-                    return self.mouse_event(click, spot);
+                    return self.mouse_event(click, spot) | unlabeled;
                 }
                 let stopped = self.app.instant(k) && self.glide.take().is_some();
                 let actions = self.app.handle(k);
@@ -846,6 +854,29 @@ impl Viewer {
             Action::Editor => {
                 self.edit();
                 false
+            }
+            Action::StartLabels => {
+                if self.glide.take().is_some() {
+                    self.show();
+                }
+                let (top, height) = self.view_css();
+                self.targets = self.engine.targets(top, height);
+                if self.targets.is_empty() {
+                    self.notify("No links or buttons on screen");
+                    return false;
+                }
+                self.app.labels = Some(Labels::new(self.targets.len()));
+                self.draw_labels()
+            }
+            Action::Labels => self.draw_labels(),
+            Action::EndLabels => {
+                let rects = self.engine.set_labels(&[], 0.0, 0.0);
+                self.redraw(&rects)
+            }
+            Action::Follow(i) => {
+                let Some(&r) = self.targets.get(i) else { return false };
+                let cleared = self.select(Select::Clear);
+                self.click_at(r[0] + r[2] / 2.0, r[1] + r[3] / 2.0) | cleared
             }
             Action::OpenThemes if app::toc_width(self.size.cols) == 0 => {
                 self.notify(&format!("Too narrow for the theme list. It needs {} columns", app::TOC_MIN_COLS));
@@ -1057,18 +1088,30 @@ impl Viewer {
                 }
                 let cleared = self.select(Select::Clear);
                 let (x, y) = grid.point(d.from, 0.5);
-                let target = self.engine.link(x, y);
-                let link = target.as_deref().and_then(Link::of);
-                if target.is_some() && link.is_none() {
-                    self.notify("Only web, mail and file links open here");
-                    return cleared;
-                }
-                if let Some(link) = link {
-                    return self.open_link(link) | cleared;
-                }
-                self.press(x, y) | cleared
+                self.click_at(x, y) | cleared
             }
         }
+    }
+
+    fn click_at(&mut self, x: f64, y: f64) -> bool {
+        let target = self.engine.link(x, y);
+        let link = target.as_deref().and_then(Link::of);
+        if target.is_some() && link.is_none() {
+            self.notify("Only web, mail and file links open here");
+            return false;
+        }
+        if let Some(link) = link {
+            return self.open_link(link);
+        }
+        self.press(x, y)
+    }
+
+    fn draw_labels(&mut self) -> bool {
+        let Some(l) = self.app.labels.as_ref() else { return false };
+        let shown: Vec<(Rect, String, usize)> = self.targets.iter().zip(&l.all).filter(|(_, s)| s.starts_with(&l.typed)).map(|(r, s)| (*r, s.clone(), l.typed.len())).collect();
+        let (top, height) = self.view_css();
+        let rects = self.engine.set_labels(&shown, top, height);
+        self.redraw(&rects)
     }
 
     /// Sends `text` to the clipboard through the desktop's copy command and through the terminal.
@@ -1516,6 +1559,11 @@ impl Viewer {
     }
 
     fn measure(&mut self) {
+        if self.app.labels.is_some() {
+            self.app.labels = Some(Labels::new(0));
+            self.targets.clear();
+            self.engine.set_labels(&[], 0.0, 0.0);
+        }
         self.layout = self.engine.layout();
         self.doc_px = (self.layout.height * self.scale).ceil() as u32;
         if trace::enabled() {

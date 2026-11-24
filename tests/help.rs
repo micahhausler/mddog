@@ -1276,7 +1276,7 @@ fn the_pointer_shape_follows_the_mouse() {
     let text = wait_for(&out, help, b"\x1b]22;xterm\x1b\\");
     tty.write_all(b"G").unwrap();
     let link = wait_for(&out, text, b"\x1b]22;pointer\x1b\\");
-    tty.write_all(b"g\x1b[<35;40;40M").unwrap();
+    tty.write_all(b"gg\x1b[<35;40;40M").unwrap();
     let status = wait_for(&out, link, b"\x1b]22;left_ptr\x1b\\");
     tty.write_all(b"\x1b[<35;40;4M").unwrap();
     let back = wait_for(&out, status, b"\x1b]22;xterm\x1b\\");
@@ -1598,5 +1598,103 @@ fn the_not_listed_notice_names_the_configured_extensions() {
     wait_for(&out, 0, b"Not a .qmd file, shown as Markdown");
     tty.write_all(b"q").unwrap();
     let _ = exits_within(&mut child, LIMIT);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn f_then_a_label_follows_that_link() {
+    let dir = scratch("labels");
+    let trace = dir.join("trace.log");
+    let f = "filler\n\n".repeat(200);
+    std::fs::write(dir.join("a.md"), format!("[first](#end) and [second](#middle)\n\n{f}## Middle\n\n{f}## End\n\n{f}")).unwrap();
+    let a = dir.join("a.md");
+    let env = [("MDDOG_TRACE", trace.to_str().unwrap()), ("XDG_CONFIG_HOME", dir.to_str().unwrap()), RETINA];
+    let Viewer { mut child, mut tty, out } = open(a.to_str().unwrap(), 80, &env);
+    let shown = wait_for(&out, 0, b"a=p,");
+    wait_count(&trace, "page loaded", 1);
+    tty.write_all(b"f").unwrap();
+    let labeled = wait_for(&out, shown, b"a=p,");
+    tty.write_all(b"a").unwrap();
+    wait_for(&out, labeled, b"Backspace or a click here goes back");
+    let end = Instant::now() + LIMIT;
+    while !std::fs::read_to_string(&trace).unwrap_or_default().lines().any(|l| l.contains(" top=\"Middle")) {
+        assert!(Instant::now() < end, "the view never showed Middle at the top");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    tty.write_all(b"q").unwrap();
+    assert_eq!(exits_within(&mut child, LIMIT), Some(true));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn f_with_nothing_to_click_says_so() {
+    let dir = scratch("nolabels");
+    std::fs::write(dir.join("a.md"), "just text\n").unwrap();
+    let a = dir.join("a.md");
+    let Viewer { mut child, mut tty, out } = open(a.to_str().unwrap(), 80, &[]);
+    let shown = wait_for(&out, 0, b"a=p,");
+    tty.write_all(b"f").unwrap();
+    wait_for(&out, shown, b"No links or buttons on screen");
+    tty.write_all(b"q").unwrap();
+    assert_eq!(exits_within(&mut child, LIMIT), Some(true));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_click_on_nothing_takes_the_labels_off_the_screen() {
+    let dir = scratch("labelclick");
+    std::fs::write(dir.join("a.md"), format!("[web](https://example.com)\n\n{}", "plain text\n\n".repeat(40))).unwrap();
+    let a = dir.join("a.md");
+    let Viewer { mut child, mut tty, out } = open(a.to_str().unwrap(), 80, &[]);
+    let shown = wait_for(&out, 0, b"a=p,");
+    tty.write_all(b"f").unwrap();
+    wait_for(&out, shown, b"a=p,");
+    std::thread::sleep(Duration::from_millis(500));
+    let labeled = out.lock().unwrap().len();
+    tty.write_all(b"\x1b[<0;78;40M\x1b[<0;78;40m").unwrap();
+    wait_for(&out, labeled, b"a=p,");
+    tty.write_all(b"q").unwrap();
+    assert_eq!(exits_within(&mut child, LIMIT), Some(true));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn f_right_after_a_jump_labels_where_the_jump_lands() {
+    let dir = scratch("labelglide");
+    std::fs::write(dir.join("a.md"), format!("# Start\n\n{}[back up](#start)\n", "plain text\n\n".repeat(300))).unwrap();
+    let a = dir.join("a.md");
+    let Viewer { mut child, mut tty, out } = open(a.to_str().unwrap(), 80, &[]);
+    let shown = wait_for(&out, 0, b"a=p,");
+    tty.write_all(b"Gf").unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    tty.write_all(b"s").unwrap();
+    wait_for(&out, shown, b"Backspace or a click here goes back");
+    tty.write_all(b"q").unwrap();
+    assert_eq!(exits_within(&mut child, LIMIT), Some(true));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_reload_while_labels_show_does_not_turn_the_next_key_into_a_command() {
+    let dir = scratch("labelreload");
+    let trace = dir.join("trace.log");
+    let marker = dir.join("edited");
+    let a = dir.join("a.md");
+    std::fs::write(&a, "[web](https://example.com)\n").unwrap();
+    let editor = format!("sh -c 'touch {}'", marker.display());
+    let env = [("MDDOG_TRACE", trace.to_str().unwrap()), ("XDG_CONFIG_HOME", dir.to_str().unwrap()), ("EDITOR", editor.as_str())];
+    let Viewer { mut child, mut tty, out } = open(a.to_str().unwrap(), 80, &env);
+    wait_for(&out, 0, b"a=p,");
+    wait_count(&trace, "page loaded", 1);
+    tty.write_all(b"f").unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    std::fs::write(&a, "[web](https://example.com)\n\nmore\n").unwrap();
+    wait_count(&trace, "reloaded", 1);
+    std::thread::sleep(Duration::from_millis(300));
+    tty.write_all(b"e").unwrap();
+    std::thread::sleep(Duration::from_millis(1000));
+    assert!(!marker.exists(), "the key after a reload opened the editor");
+    tty.write_all(b"q").unwrap();
+    assert_eq!(exits_within(&mut child, LIMIT), Some(true));
     let _ = std::fs::remove_dir_all(&dir);
 }

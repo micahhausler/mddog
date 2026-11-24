@@ -3,6 +3,7 @@ pub mod cache;
 pub mod chrome;
 mod clipboard;
 pub mod keys;
+mod labels;
 mod link;
 pub mod loading;
 pub mod picker;

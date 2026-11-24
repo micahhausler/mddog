@@ -27,6 +27,11 @@
   --mddog-match-current-bg: #ff9632;
   --mddog-match-fg: #000000;
   --mddog-match-current-fg: #000000;
+  --mddog-hint-bg: #fff785;
+  --mddog-hint-bg-end: #ffc542;
+  --mddog-hint-border: #c38a22;
+  --mddog-hint-fg: #302505;
+  --mddog-hint-fg-typed: #d4ac3a;
   --mddog-text-selection: #b6d6fb;
   --mddog-alert-note: #0969da;
   --mddog-alert-tip: #1a7f37;

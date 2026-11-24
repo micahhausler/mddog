@@ -414,3 +414,147 @@ fn wide_display_math_scrolls_inside_the_page_column() {
     assert!(e.code_scroll(300.0, y, 40.0).is_empty(), "the left margin scrolled the equation");
     assert!(!e.code_scroll(1000.0, y, 40.0).is_empty(), "the wide equation didn't scroll");
 }
+
+fn center(r: [f64; 4]) -> (f64, f64) {
+    (r[0] + r[2] / 2.0, r[1] + r[3] / 2.0)
+}
+
+#[test]
+fn targets_list_each_clickable_thing_in_view_once() {
+    let words = "word ".repeat(60);
+    let e = engine(&format!("[{words}](#a) and [b](https://example.com)\n\n```\ncode\n```\n\n<details><summary>More</summary>\n\nhi\n</details>\n"));
+    let all = e.targets(0.0, e.layout().height);
+    assert_eq!(all.len(), 4, "{all:?}");
+    let (x, y) = center(all[0]);
+    assert_eq!(e.link(x, y).as_deref(), Some("#a"));
+    let (x, y) = center(all[1]);
+    assert_eq!(e.link(x, y).as_deref(), Some("https://example.com"));
+    let (x, y) = center(all[2]);
+    assert!(matches!(e.press(x, y), Press::Copy { .. }));
+    let (x, y) = center(all[3]);
+    assert_eq!(e.press(x, y), Press::Other);
+}
+
+#[test]
+fn targets_skip_what_is_out_of_view() {
+    let e = engine(&format!("[top](#a)\n\n{}[bottom](#b)\n", "para\n\n".repeat(80)));
+    let h = e.layout().height;
+    let top = e.targets(0.0, 200.0);
+    assert_eq!(top.len(), 1);
+    let (x, y) = center(top[0]);
+    assert_eq!(e.link(x, y).as_deref(), Some("#a"));
+    let bottom = e.targets(h - 200.0, 200.0);
+    assert_eq!(bottom.len(), 1);
+    let (x, y) = center(bottom[0]);
+    assert_eq!(e.link(x, y).as_deref(), Some("#b"));
+}
+
+#[test]
+fn targets_skip_links_scrolled_out_of_a_wide_table() {
+    let e = engine(&format!("| a | b |\n|---|---|\n| {} | [far](#far) |\n", "x".repeat(300)));
+    assert!(e.targets(0.0, e.layout().height).is_empty());
+    e.code_scroll_view(0.0, 400.0, 10_000.0);
+    let all = e.targets(0.0, e.layout().height);
+    assert_eq!(all.len(), 1);
+    let (x, y) = center(all[0]);
+    assert_eq!(e.link(x, y).as_deref(), Some("#far"));
+}
+
+#[test]
+fn labels_draw_over_the_page_and_go_away() {
+    let e = engine("[link](#a)\n");
+    let target = e.targets(0.0, 100.0)[0];
+    let yellow = |e: &Engine| {
+        let snap = e.snapshot(0.0, 100.0, 2.0, |n| Some(vec![0u8; n])).unwrap();
+        snap.rgba.chunks(4).any(|p| p[0] > 240 && p[1] > 190 && p[2] < 140)
+    };
+    assert!(!yellow(&e));
+    let drawn = e.set_labels(&[(target, "s".into(), 0)], 0.0, 100.0);
+    assert!(!drawn.is_empty());
+    assert!(yellow(&e));
+    let cleared = e.set_labels(&[], 0.0, 100.0);
+    assert_eq!(cleared, drawn);
+    assert!(!yellow(&e));
+}
+
+#[test]
+fn targets_take_the_visible_part_of_a_link() {
+    let e = engine(&format!("| a | b |\n|---|---|\n| x | [{}](#far) |\n", "y".repeat(300)));
+    let all = e.targets(0.0, e.layout().height);
+    assert_eq!(all.len(), 1, "{all:?}");
+    assert!(all[0][0] + all[0][2] <= 640.0, "{all:?}");
+    let (x, y) = center(all[0]);
+    assert_eq!(e.link(x, y).as_deref(), Some("#far"));
+    let e = engine("[top](#a)\n");
+    let first = e.targets(0.0, 100.0)[0];
+    let cut = e.targets(first[1] + 4.0, 100.0);
+    assert_eq!(cut.len(), 1);
+    assert!(cut[0][1] >= first[1] + 4.0, "{cut:?}");
+    let (x, y) = center(cut[0]);
+    assert_eq!(e.link(x, y).as_deref(), Some("#a"));
+}
+
+#[test]
+fn a_summary_label_toggles_even_with_a_link_inside() {
+    let e = engine(&format!("<details><summary><a href=\"#x\">{}</a></summary>\n\nhi\n</details>\n", "linked ".repeat(12)));
+    let all = e.targets(0.0, e.layout().height);
+    assert_eq!(all.len(), 2, "{all:?}");
+    let toggle = *all
+        .iter()
+        .find(|r| {
+            let (x, y) = center(**r);
+            e.link(x, y).is_none()
+        })
+        .expect("the summary's own target hits no link");
+    let (x, y) = center(toggle);
+    assert_eq!(e.press(x, y), Press::Other);
+}
+
+#[test]
+fn a_label_on_a_target_cut_at_the_bottom_stays_in_view() {
+    let e = engine("[link](#a)\n");
+    let whole = e.targets(0.0, 100.0)[0];
+    let height = whole[1] + 3.0;
+    let cut = e.targets(0.0, height)[0];
+    let drawn = e.set_labels(&[(cut, "s".into(), 0)], 0.0, height);
+    let snap = e.snapshot(0.0, height, 2.0, |n| Some(vec![0u8; n])).unwrap();
+    let rows = snap.rgba.chunks(snap.width * 4).filter(|row| row.chunks(4).any(|p| p[0] > 240 && p[1] > 190 && p[2] < 140)).count();
+    assert!(rows as f64 >= 20.0, "only {rows} rows of the label show, {drawn:?}");
+}
+
+fn label_rows(e: &Engine, top: f64, height: f64) -> usize {
+    let snap = e.snapshot(top, height, 2.0, |n| Some(vec![0u8; n])).unwrap();
+    snap.rgba.chunks(snap.width * 4).filter(|row| row.chunks(4).any(|p| p[0] > 240 && p[1] > 190 && p[2] < 140)).count()
+}
+
+#[test]
+fn a_label_on_a_target_cut_at_the_top_stays_in_view() {
+    let e = engine("[link](#a)\n\nmore text\n\nand more\n");
+    let whole = e.targets(0.0, 100.0)[0];
+    let top = whole[1] + whole[3] - 3.0;
+    let cut = e.targets(top, 100.0)[0];
+    e.set_labels(&[(cut, "s".into(), 0)], top, 100.0);
+    let rows = label_rows(&e, top, 100.0);
+    assert!(rows >= 20, "only {rows} rows of the label show");
+}
+
+#[test]
+fn a_wrapped_link_is_labeled_on_its_most_visible_line() {
+    let e = engine(&format!("[{}](#a)\n\nafter\n", "wrapped link words ".repeat(12)));
+    let lines = e.targets(0.0, 400.0);
+    assert_eq!(lines.len(), 1);
+    let first = lines[0];
+    let top = first[1] + first[3] - 3.0;
+    let cut = e.targets(top, 200.0);
+    assert_eq!(cut.len(), 1);
+    assert!(cut[0][3] > 10.0, "the label went on a {}-pixel sliver", cut[0][3]);
+}
+
+#[test]
+fn a_wrapped_link_in_full_view_is_labeled_on_its_first_line() {
+    let e = engine("# Title\n\nSee [the docs](#d) and [setup](#s), or [a much longer link that wraps onto the next line of the paragraph here](#x).\n");
+    let all = e.targets(0.0, 400.0);
+    assert_eq!(all.len(), 3);
+    let wrapped = all.iter().find(|r| e.link(r[0] + r[2] / 2.0, r[1] + r[3] / 2.0).as_deref() == Some("#x")).unwrap();
+    assert!(wrapped[0] > 100.0, "the label went on the second line: {wrapped:?}");
+}

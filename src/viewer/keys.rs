@@ -16,8 +16,8 @@ pub const KEYS: &str = concat!(
     "Scroll
   j k, Down Up            scroll down, up one row (also Ctrl-e Ctrl-y)
   d u, Ctrl-d Ctrl-u      scroll down, up half a screen
-  Space f b, PgDn PgUp    scroll down, up a full screen (also Ctrl-b up)
-  g or gg, G, Home End    go to the top, the bottom of the file
+  Space, PgDn PgUp        scroll down, up a full screen (also Ctrl-b up)
+  gg, G, Home End         go to the top, the bottom of the file
   h l, Left Right         scroll wide code blocks and tables on screen left, right
   mouse wheel             scroll 3 rows. Shift + wheel to scroll a code block or table sideways
   Backspace, Ctrl-o       go back to where you were before a jump, or to the file before
@@ -48,8 +48,9 @@ Contents
   click an entry          jump to that section
 
 Other
+  f                       label every link and button on screen. Type a label to click it, Esc to cancel
   w                       wrap or unwrap long lines in code blocks
-  e or v                  open the file in $EDITOR (default vi), then reload it
+  e                       open the file in $EDITOR (default vi), then reload it
   c                       copy the file's Markdown source to the clipboard
   ?                       show this list. Press ? or Esc to go back to the page
   T                       pick a theme: j k to move, Space or a click to try one, Enter to save it, Esc or T to cancel. The page still works meanwhile

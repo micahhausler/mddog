@@ -9,7 +9,7 @@ use crate::render::doc::{self, Doc};
 use crate::render::images::Images;
 use crate::render::layout::{self, Opts, place_bar};
 use crate::render::page::{BtnKind, HScroll, Kind, NO_TEXT, Page};
-use crate::render::raster::{self, Ctx, Expanded, Overlay};
+use crate::render::raster::{self, Ctx, Expanded, Label, Overlay};
 use crate::render::svg::render_view;
 use crate::render::text::Fonts;
 use crate::render::theme::Theme;
@@ -515,6 +515,55 @@ impl Engine {
         let st = self.st.borrow();
         let l = link_at(&st, self.px(x), self.px(y))?;
         Some(st.page.urls.get(l as usize - 1).cloned().unwrap_or_default())
+    }
+
+    pub fn targets(&self, top: f64, height: f64) -> Vec<Rect> {
+        let st = self.st.borrow();
+        let (top, bottom) = (self.px(top), self.px(top + height));
+        let visible = |(x, y, w, h): (f32, f32, f32, f32), clip: u16| {
+            let (mut x0, mut y0, mut x1, mut y1) = (x, y.max(top), x + w, (y + h).min(bottom));
+            if clip > 0 {
+                let hs = &st.page.hscroll[clip as usize - 1];
+                (x0, y0, x1, y1) = (x0.max(hs.x), y0.max(hs.y), x1.min(hs.x + hs.w), y1.min(hs.y + hs.h));
+            }
+            (x1 > x0 && y1 > y0).then_some((x0, y0, x1 - x0, y1 - y0))
+        };
+        let mut best: HashMap<u32, (f32, f32, f32, f32)> = HashMap::new();
+        for l in &st.page.links {
+            if let Some(r) = visible((l.x + dx(&st, l.clip), l.y, l.w, l.h), l.clip) {
+                let e = best.entry(l.link).or_insert(r);
+                if r.3 > e.3 + self.scale.get() as f32 {
+                    *e = r;
+                }
+            }
+        }
+        let mut out: Vec<(f32, f32, f32, f32)> = best.into_values().collect();
+        out.extend(st.page.buttons.iter().filter(|b| b.w > 0.0 && !b.off).filter_map(|b| visible((b.x, b.y, b.w, b.h), 0)));
+        let marker = 12.0 * self.scale.get() as f32;
+        out.extend(st.page.toggles.iter().filter_map(|t| visible((t.0, t.1, t.2.min(marker), t.3), 0)));
+        out.sort_by(|a, b| a.1.total_cmp(&b.1).then(a.0.total_cmp(&b.0)));
+        out.into_iter().map(|r| self.css(r)).collect()
+    }
+
+    pub fn set_labels(&self, labels: &[(Rect, String, usize)], top: f64, height: f64) -> Vec<Rect> {
+        let mut st = self.st.borrow_mut();
+        let st = &mut *st;
+        let s = self.scale.get() as f32;
+        let f = Label::font(s);
+        let (a, d) = st.fonts.ascent_descent(f);
+        let mut out: Vec<Rect> = st.ov.labels.iter().map(|l| self.css(l.bounds(s))).collect();
+        st.ov.labels = labels
+            .iter()
+            .map(|(r, text, typed)| {
+                let w = st.fonts.measure(f, &text.to_ascii_uppercase()) + 8.0 * s;
+                let x = self.px(r[0]).min(st.page.w - w).max(0.0);
+                let h = a + d + 3.0 * s;
+                let y = self.px(r[1]).min(self.px(r[1] + r[3]) - h).min(self.px(top + height) - h).max(self.px(top)).max(0.0);
+                Label { x, y, w, h, text: text.clone(), typed: *typed }
+            })
+            .collect();
+        out.extend(st.ov.labels.iter().map(|l| self.css(l.bounds(s))));
+        out
     }
 
     pub fn reset_copy(&self) -> Vec<Rect> {

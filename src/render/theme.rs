@@ -53,6 +53,10 @@ pub struct Theme {
     /// Text inside a match and inside the current match.
     pub hl_fg: Rgb,
     pub hl_cur_fg: Rgb,
+    pub hint_bg: (Rgb, Rgb),
+    pub hint_border: Rgb,
+    pub hint_fg: Rgb,
+    pub hint_fg_typed: Rgb,
     pub sel_bg: Rgb,
     /// By `Alert as usize`.
     pub alerts: [Rgb; 5],
@@ -170,6 +174,10 @@ impl Theme {
             hl_cur_bg: c("match-current-bg"),
             hl_fg: c("match-fg"),
             hl_cur_fg: c("match-current-fg"),
+            hint_bg: (c("hint-bg"), c("hint-bg-end")),
+            hint_border: c("hint-border"),
+            hint_fg: c("hint-fg"),
+            hint_fg_typed: c("hint-fg-typed"),
             sel_bg: c("text-selection"),
             copied: c("alert-tip"),
             alerts: Alert::GITHUB.map(|a| c(&format!("alert-{}", a.title().to_lowercase()))),

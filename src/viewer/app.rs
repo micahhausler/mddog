@@ -1,3 +1,4 @@
+use super::labels::{self, Labels};
 use crate::term::Key;
 
 /// How many places Backspace goes back through: jumps in a file, and files.
@@ -173,10 +174,15 @@ pub enum Action {
     CloseThemes,
     DropThemes,
     Quit,
+    StartLabels,
+    Labels,
+    EndLabels,
+    Follow(usize),
 }
 
 #[derive(Default)]
 pub struct App {
+    pub labels: Option<Labels>,
     pub scroll: u32,
     pub doc_rows: u32,
     pub viewport: u32,
@@ -202,7 +208,7 @@ pub struct App {
     last_query: String,
     back: Vec<u32>,
     pinned: Option<usize>,
-    bracket: Option<char>,
+    prefix: Option<char>,
     numkey: Option<(char, usize)>,
     reverse: bool,
 }
@@ -243,6 +249,14 @@ impl App {
         self.clamp_toc();
         if let Some(l) = self.themes.as_mut() {
             l.reveal(self.toc_list_height as usize);
+        }
+    }
+
+    pub fn click(&mut self) -> Vec<Action> {
+        self.prefix = None;
+        match self.labels.take() {
+            Some(_) => vec![Action::EndLabels],
+            None => vec![],
         }
     }
 
@@ -419,7 +433,8 @@ impl App {
     pub fn handle(&mut self, key: Key) -> Vec<Action> {
         let key = if key == Key::Ctrl('t') && self.prompt.is_none() { Key::Char('t') } else { key };
         let instant = self.instant(key) || self.prompt.is_some();
-        let leave = self.themes.is_some() && self.prompt.is_none() && !self.help && !self.expanded && (key == Key::Ctrl('p') || (key == Key::Char('t') && !self.entries.is_empty()));
+        let leave =
+            self.themes.is_some() && self.labels.is_none() && self.prompt.is_none() && !self.help && !self.expanded && (key == Key::Ctrl('p') || (key == Key::Char('t') && !self.entries.is_empty()));
         let mut a = self.handle_key(key);
         if leave {
             a.insert(0, Action::DropThemes);
@@ -435,12 +450,44 @@ impl App {
     }
 
     fn handle_key(&mut self, key: Key) -> Vec<Action> {
+        let held = self.prefix.take();
         if key == Key::Copy {
+            if self.labels.take().is_some() {
+                return vec![Action::EndLabels, Action::CopySelection];
+            }
             return vec![Action::CopySelection];
+        }
+        if let Some(l) = self.labels.as_mut() {
+            return match key {
+                Key::Ctrl('c') => vec![Action::Quit],
+                Key::Char(c) => match l.push(c.to_ascii_lowercase()) {
+                    labels::Step::Pick(i) => {
+                        self.labels = None;
+                        vec![Action::EndLabels, Action::Follow(i)]
+                    }
+                    labels::Step::Wait => vec![Action::Labels],
+                    labels::Step::Miss => {
+                        self.labels = None;
+                        vec![Action::EndLabels]
+                    }
+                },
+                Key::Backspace if l.typed.is_empty() => {
+                    self.labels = None;
+                    vec![Action::EndLabels]
+                }
+                Key::Backspace => {
+                    l.pop();
+                    vec![Action::Labels]
+                }
+                _ => {
+                    self.labels = None;
+                    vec![Action::EndLabels]
+                }
+            };
         }
         if self.expanded {
             return match key {
-                Key::Char('q' | 'Q') | Key::Ctrl('c') => vec![Action::Quit],
+                Key::Char('q') | Key::Ctrl('c') => vec![Action::Quit],
                 Key::WheelUp(..) | Key::WheelDown(..) | Key::WheelLeft(..) | Key::WheelRight(..) => vec![],
                 _ => {
                     self.expanded = false;
@@ -499,7 +546,7 @@ impl App {
             self.help_top = match (key, scroll_step(key)) {
                 (_, Some((step, true))) => t + self.rows(step),
                 (_, Some((step, false))) => t.saturating_sub(self.rows(step)),
-                (Key::Char('q' | 'Q') | Key::Ctrl('c'), _) => return vec![Action::Quit],
+                (Key::Char('q') | Key::Ctrl('c'), _) => return vec![Action::Quit],
                 (Key::Ctrl('z'), _) => return vec![Action::Suspend],
                 (Key::Char('?') | Key::Esc, _) => {
                     self.help = false;
@@ -511,9 +558,6 @@ impl App {
             return vec![Action::Help];
         }
         if self.themes.is_some() {
-            if !matches!(key, Key::Char('[' | ']')) {
-                self.bracket = None;
-            }
             return match key {
                 Key::Char('j') | Key::Down => self.theme_step(true),
                 Key::Char('k') | Key::Up => self.theme_step(false),
@@ -522,30 +566,34 @@ impl App {
                 Key::Esc | Key::Char('T') => vec![Action::CloseThemes],
                 Key::Char('t') if !self.entries.is_empty() => {
                     self.toc_visible = false;
-                    self.page_key(key)
+                    self.page_key(key, held)
                 }
-                _ => self.page_key(key),
+                _ => self.page_key(key, held),
             };
         }
-        self.page_key(key)
+        self.page_key(key, held)
     }
 
-    fn page_key(&mut self, key: Key) -> Vec<Action> {
-        if let Key::Char(c @ (']' | '[')) = key {
-            if self.bracket.take() == Some(c) && !self.entries.is_empty() {
-                return self.cycle_root(c == ']');
+    fn page_key(&mut self, key: Key, held: Option<char>) -> Vec<Action> {
+        if let Key::Char(c @ (']' | '[' | 'g')) = key {
+            if held == Some(c) {
+                if c == 'g' {
+                    return self.scroll_to(0);
+                }
+                if !self.entries.is_empty() {
+                    return self.cycle_root(c == ']');
+                }
             }
-            self.bracket = Some(c);
+            self.prefix = Some(c);
             return vec![];
         }
-        self.bracket = None;
         match scroll_step(key) {
             Some((step, true)) => return self.down(self.rows(step)),
             Some((step, false)) => return self.up(self.rows(step)),
             None => {}
         }
         match key {
-            Key::Char('g') | Key::Home => self.scroll_to(0),
+            Key::Home => self.scroll_to(0),
             Key::Char('G') | Key::End => self.scroll_to(u32::MAX),
             Key::Char('h') | Key::Left => vec![Action::ScrollView(-CODE_KEY)],
             Key::Char('l') | Key::Right => vec![Action::ScrollView(CODE_KEY)],
@@ -569,8 +617,9 @@ impl App {
                 self.toc_visible = false;
                 vec![Action::ToggleToc]
             }
-            Key::Char('q' | 'Q') | Key::Ctrl('c') => vec![Action::Quit],
-            Key::Char('e' | 'v') => vec![Action::Editor],
+            Key::Char('q') | Key::Ctrl('c') => vec![Action::Quit],
+            Key::Char('e') => vec![Action::Editor],
+            Key::Char('f') => vec![Action::StartLabels],
             Key::Char('c') => vec![Action::Copy],
             Key::Ctrl('z') => vec![Action::Suspend],
             Key::Ctrl('p') => vec![Action::Browse],
@@ -887,8 +936,8 @@ fn scroll_step(key: Key) -> Option<(Step, bool)> {
         Key::WheelUp(..) => (Step::Wheel, false),
         Key::Char('d') | Key::Ctrl('d') => (Step::Half, true),
         Key::Char('u') | Key::Ctrl('u') => (Step::Half, false),
-        Key::Char(' ' | 'f') | Key::PageDown => (Step::Page, true),
-        Key::Char('b') | Key::PageUp | Key::Ctrl('b') => (Step::Page, false),
+        Key::Char(' ') | Key::PageDown => (Step::Page, true),
+        Key::PageUp | Key::Ctrl('b') => (Step::Page, false),
         _ => return None,
     })
 }
@@ -956,7 +1005,7 @@ mod tests {
 
     #[test]
     fn k03_page_down() {
-        for (k, n) in [(Key::Char('d'), 10), (Key::Ctrl('d'), 10), (Key::PageDown, 18), (Key::Char(' '), 18), (Key::Char('f'), 18)] {
+        for (k, n) in [(Key::Char('d'), 10), (Key::Ctrl('d'), 10), (Key::PageDown, 18), (Key::Char(' '), 18)] {
             let mut a = app(100, 20);
             a.handle(k);
             assert_eq!(a.scroll, n, "{k:?}");
@@ -972,7 +1021,7 @@ mod tests {
 
     #[test]
     fn k04_page_up() {
-        for (k, n) in [(Key::Char('u'), 40), (Key::Ctrl('u'), 40), (Key::PageUp, 32), (Key::Char('b'), 32), (Key::Ctrl('b'), 32)] {
+        for (k, n) in [(Key::Char('u'), 40), (Key::Ctrl('u'), 40), (Key::PageUp, 32), (Key::Ctrl('b'), 32)] {
             let mut a = app(100, 20);
             a.scroll = 50;
             a.handle(k);
@@ -985,13 +1034,161 @@ mod tests {
     }
 
     #[test]
-    fn k05_top() {
-        for k in [Key::Char('g'), Key::Home] {
+    fn less_only_keys_do_nothing() {
+        for k in [Key::Char('b'), Key::Char('v'), Key::Char('Q')] {
             let mut a = app(100, 20);
             a.scroll = 40;
-            a.handle(k);
+            assert_eq!(a.handle(k), vec![], "{k:?}");
+            assert_eq!(a.scroll, 40, "{k:?}");
+        }
+    }
+
+    #[test]
+    fn f_asks_for_labels() {
+        assert_eq!(app(100, 20).handle(Key::Char('f')), vec![Action::StartLabels]);
+    }
+
+    #[test]
+    fn typing_a_label_follows_its_target() {
+        let mut a = app(100, 20);
+        a.labels = Some(Labels::new(20));
+        let two = a.labels.as_ref().unwrap().all.iter().position(|l| l.len() == 2).unwrap();
+        let label = a.labels.as_ref().unwrap().all[two].clone();
+        let mut cs = label.chars();
+        assert_eq!(a.handle(Key::Char(cs.next().unwrap())), vec![Action::Labels]);
+        assert_eq!(a.handle(Key::Char(cs.next().unwrap())), vec![Action::EndLabels, Action::Follow(two)]);
+        assert!(a.labels.is_none());
+    }
+
+    #[test]
+    fn labels_take_uppercase_letters_too() {
+        let mut a = app(100, 20);
+        a.labels = Some(Labels::new(3));
+        assert_eq!(a.handle(Key::Char('A')), vec![Action::EndLabels, Action::Follow(1)]);
+    }
+
+    #[test]
+    fn a_key_that_continues_no_label_ends_labels_and_does_nothing_else() {
+        for k in ['q', '/', 'x', '1', 'z'] {
+            let mut a = app(100, 20);
+            a.labels = Some(Labels::new(20));
+            assert_eq!(a.handle(Key::Char(k)), vec![Action::EndLabels], "{k:?}");
+            assert!(a.labels.is_none());
+        }
+        let mut a = app(100, 20);
+        a.labels = Some(Labels::new(20));
+        let first = a.labels.as_ref().unwrap().all.iter().find(|l| l.len() == 2).unwrap().chars().next().unwrap();
+        a.handle(Key::Char(first));
+        assert_eq!(a.handle(Key::Char('h')), vec![Action::EndLabels]);
+    }
+
+    #[test]
+    fn cmd_c_copies_and_ends_labels() {
+        let mut a = app(100, 20);
+        a.labels = Some(Labels::new(3));
+        assert_eq!(a.handle(Key::Copy), vec![Action::EndLabels, Action::CopySelection]);
+        assert!(a.labels.is_none());
+    }
+
+    #[test]
+    fn a_key_that_ends_labels_leaves_the_theme_list_alone() {
+        let dark = crate::theme::builtin("github-dark").unwrap();
+        let mut a = app(100, 20);
+        a.set_headings(&[h(1, "One", 0)]);
+        a.themes = Some(super::super::themes::List::new(vec![crate::config::Choice::Theme { value: "github-dark".into(), theme: dark }], None, false, dark, 10));
+        for k in [Key::Ctrl('p'), Key::Char('t')] {
+            a.labels = Some(Labels::new(3));
+            assert_eq!(a.handle(k), vec![Action::EndLabels], "{k:?}");
+            assert!(a.themes.is_some());
+        }
+    }
+
+    #[test]
+    fn with_no_labels_left_the_next_key_only_ends_them() {
+        for k in [Key::Char('e'), Key::Char('c'), Key::Char('q')] {
+            let mut a = app(100, 20);
+            a.labels = Some(Labels::new(0));
+            assert_eq!(a.handle(k), vec![Action::EndLabels], "{k:?}");
+        }
+    }
+
+    #[test]
+    fn backspace_with_nothing_typed_ends_labels() {
+        let mut a = app(100, 20);
+        a.labels = Some(Labels::new(3));
+        assert_eq!(a.handle(Key::Backspace), vec![Action::EndLabels]);
+        assert!(a.labels.is_none());
+    }
+
+    #[test]
+    fn backspace_in_labels_takes_back_a_letter() {
+        let mut a = app(100, 20);
+        a.labels = Some(Labels::new(20));
+        a.handle(Key::Char('s'));
+        assert_eq!(a.handle(Key::Backspace), vec![Action::Labels]);
+        assert_eq!(a.labels.as_ref().unwrap().typed, "");
+    }
+
+    #[test]
+    fn esc_or_another_key_ends_labels_and_does_nothing_else() {
+        for k in [Key::Esc, Key::Down, Key::PageDown, Key::Enter] {
+            let mut a = app(100, 20);
+            a.labels = Some(Labels::new(3));
+            assert_eq!(a.handle(k), vec![Action::EndLabels], "{k:?}");
+            assert!(a.labels.is_none());
             assert_eq!(a.scroll, 0);
         }
+        let mut a = app(100, 20);
+        a.labels = Some(Labels::new(3));
+        assert_eq!(a.handle(Key::Ctrl('c')), vec![Action::Quit]);
+    }
+
+    #[test]
+    fn a_click_ends_labels() {
+        let mut a = app(100, 20);
+        a.labels = Some(Labels::new(3));
+        assert_eq!(a.click(), vec![Action::EndLabels]);
+        assert!(a.labels.is_none());
+        assert_eq!(a.click(), vec![]);
+    }
+
+    #[test]
+    fn a_lone_g_is_dropped_by_anything_between() {
+        let between: [&dyn Fn(&mut App); 3] = [
+            &|a| {
+                keys(a, &[Key::Char('/'), Key::Esc]);
+            },
+            &|a| {
+                keys(a, &[Key::Char('?'), Key::Char('?')]);
+            },
+            &|a| {
+                a.click();
+            },
+        ];
+        for step in between {
+            let mut a = app(100, 20);
+            a.scroll = 40;
+            a.handle(Key::Char('g'));
+            step(&mut a);
+            a.handle(Key::Char('g'));
+            assert_eq!(a.scroll, 40);
+        }
+    }
+
+    #[test]
+    fn k05_top() {
+        for k in [&[Key::Char('g'), Key::Char('g')][..], &[Key::Home]] {
+            let mut a = app(100, 20);
+            a.scroll = 40;
+            keys(&mut a, k);
+            assert_eq!(a.scroll, 0);
+        }
+        let mut a = app(100, 20);
+        a.scroll = 40;
+        keys(&mut a, &[Key::Char('g')]);
+        assert_eq!(a.scroll, 40);
+        keys(&mut a, &[Key::Char('j'), Key::Char('g')]);
+        assert_eq!(a.scroll, 41);
         let mut a = app(100, 20);
         a.scroll = 40;
         a.handle(Key::Ctrl('g'));
@@ -1430,12 +1627,10 @@ mod tests {
 
     #[test]
     fn q01_quit() {
-        for k in [Key::Char('q'), Key::Char('Q')] {
-            let mut a = app(100, 20);
-            a.toc_visible = true;
-            a.query = "x".into();
-            assert_eq!(a.handle(k), vec![Action::Quit]);
-        }
+        let mut a = app(100, 20);
+        a.toc_visible = true;
+        a.query = "x".into();
+        assert_eq!(a.handle(Key::Char('q')), vec![Action::Quit]);
         let mut a = app(100, 20);
         a.handle(Key::Char('/'));
         assert!(!a.handle(Key::Char('q')).contains(&Action::Quit));
@@ -1612,7 +1807,7 @@ mod tests {
         assert_eq!(a.scroll, 40);
         keys(&mut a, &[Key::Char('g'), Key::Char('g')]);
         assert_eq!(a.scroll, 0);
-        assert_eq!(a.handle(Key::Char('v')), vec![Action::Editor]);
+        assert_eq!(a.handle(Key::Char('e')), vec![Action::Editor]);
     }
 
     #[test]
@@ -1693,7 +1888,7 @@ mod tests {
         a.set_headings(&(0..12).map(|i| h(2, "x", i * 30)).collect::<Vec<_>>());
         a.handle(Key::Char('G'));
         assert!(a.toc_offset + a.toc_list_height > 11);
-        a.handle(Key::Char('g'));
+        keys(&mut a, &[Key::Char('g'), Key::Char('g')]);
         assert_eq!(a.toc_offset, 0);
         for _ in 0..7 {
             a.handle(Key::Char('J'));
@@ -1848,7 +2043,7 @@ mod tests {
 
     #[test]
     fn jump_keys_glide_and_row_keys_do_not() {
-        for k in [Key::Char('d'), Key::Ctrl('d'), Key::Char(' '), Key::Char('f'), Key::PageDown, Key::Char('G'), Key::End] {
+        for k in [Key::Char('d'), Key::Ctrl('d'), Key::Char(' '), Key::PageDown, Key::Char('G'), Key::End] {
             assert_eq!(app(100, 20).handle(k), vec![Action::Glide], "{k:?}");
         }
         for k in [Key::Char('j'), Key::Down, Key::Ctrl('e'), Key::WheelDown(1, 1)] {

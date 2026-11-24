@@ -34,7 +34,7 @@ const GLIDE_FRAME: Duration = Duration::from_millis(8);
 const FOLD_IDLE: Duration = Duration::from_secs(1);
 /// The X11 name for the arrow, sent with OSC 22 off text, links and buttons.
 const DEFAULT_POINTER: &str = "left_ptr";
-const SUPPORTED: &str = "Ghostty, iTerm2, Kitty, WezTerm, or Rex";
+const SUPPORTED: &str = "Ghostty, iTerm2, Kitty, Konsole, WezTerm, or Rex";
 
 /// Why mddog won't run here, when the environment alone tells. Checked before anything goes to the terminal.
 pub fn refusal() -> Option<String> {
@@ -291,6 +291,8 @@ fn start(file: PathBuf, stdin: bool, list: Option<PathBuf>) -> i32 {
     // The first read of the macOS appearance takes about 2 ms, so make it while the file renders.
     std::thread::spawn(config::theme);
     std::thread::spawn(screen::display_scale);
+    std::thread::spawn(crate::render::text::warm);
+    std::thread::spawn(crate::render::svg::warm);
     let mut tty = match Tty::open() {
         Ok(t) => t,
         Err(e) => {
@@ -319,16 +321,27 @@ fn start(file: PathBuf, stdin: bool, list: Option<PathBuf>) -> i32 {
         None => Some(Loader::start(tty.fd, &name)),
     };
     trace::mark("tty ready");
-    let engine = Engine::new(800.0, screen::SCALE_GUESS, config::font_smoothing());
-    trace::mark("engine created");
     let (probe, leftover) = tty.probe(PROBE_WAIT);
     if probe.pixel_mouse {
         tty.write(term::PIXEL_MOUSE_ON.as_bytes());
     }
     trace::mark("terminal probed");
-    engine.set_display_p3(probe.ghostty());
-    if probe.no_graphics() {
-        let refusal = format!("mdd: this terminal can't show images so it can't show the page. mddog needs the Kitty graphics protocol: use {SUPPORTED}.");
+    if let Some((_, h)) = probe.cell {
+        screen::set_probed_cell(h);
+    }
+    let first_scale = if cfg!(target_os = "macos") { screen::SCALE_GUESS } else { screen::display_scale() };
+    let engine = Engine::new(800.0, first_scale, config::font_smoothing());
+    trace::mark("engine created");
+    engine.set_display_p3(probe.display_p3());
+    if let Some(dark) = probe.dark {
+        config::set_dark(dark);
+    }
+    let refusal = if probe.no_graphics() {
+        Some(format!("mdd: this terminal can't show images so it can't show the page. mddog needs the Kitty graphics protocol: use {SUPPORTED}."))
+    } else {
+        crate::render::text::missing_fonts().map(|m| format!("mdd: {m}"))
+    };
+    if let Some(refusal) = refusal {
         drop(loader);
         drop(picker);
         tty.write(term::leave().as_bytes());
@@ -338,6 +351,7 @@ fn start(file: PathBuf, stdin: bool, list: Option<PathBuf>) -> i32 {
         return 1;
     }
     let size = tty.size();
+    trace::mark("size read");
     let display = engine.scale.get();
     let scale = display;
     let (cell_w, cell_h) = probe.cell_px(size, display);
@@ -560,6 +574,25 @@ impl Viewer {
                 self.resize.poke(if waiting { now.checked_sub(app::RESIZE_DEBOUNCE).unwrap_or(now) } else { now });
                 self.glide.take().is_some()
             }
+            Event::Scheme(_) if self.probe.background => {
+                self.tty.write(term::BACKGROUND_QUERY.as_bytes());
+                self.tty.flush();
+                false
+            }
+            Event::Background(dark) if !self.probe.background => {
+                self.probe.background = true;
+                self.handle(Event::Background(dark))
+            }
+            Event::Scheme(dark) | Event::Background(dark) => {
+                config::set_dark(dark);
+                if self.listing {
+                    return true;
+                }
+                if self.opened && !std::ptr::eq(config::theme(), self.theme) {
+                    self.rerender_keep();
+                }
+                false
+            }
             Event::Gone(kitty::END_CHECK) => {
                 self.cache.end_check();
                 false
@@ -594,6 +627,10 @@ impl Viewer {
             }
             Event::Listed => self.picker.as_mut().is_some_and(Picker::receive) && self.listing,
             Event::Previewed => self.take_previews(),
+            Event::Notice(m) => {
+                self.notify(&m);
+                false
+            }
             Event::Key(Key::Mouse(click, x, y)) if self.listing && click == Click::Move => {
                 self.hover_at = Some((self.spot(x, y), u32::MAX));
                 false
@@ -1034,7 +1071,7 @@ impl Viewer {
         }
     }
 
-    /// Sends `text` to the clipboard through pbcopy and through the terminal.
+    /// Sends `text` to the clipboard through the desktop's copy command and through the terminal.
     /// The OSC 52 write sits between frames, so it never splits a tile.
     fn copy_text(&mut self, text: &str) {
         self.tty.write(clipboard::copy(text).as_bytes());
@@ -1132,8 +1169,12 @@ impl Viewer {
     fn open_link(&mut self, link: Link) -> bool {
         match link {
             Link::Open(url) => {
-                self.notify(&format!("Opened {url}"));
-                link::open(url);
+                let shown = format!("Opened {url}");
+                let tx = self.tx.clone();
+                match link::open(url, move |m| drop(tx.send(Event::Notice(m)))) {
+                    Ok(()) => self.notify(&shown),
+                    Err(e) => self.notify(&e),
+                }
                 false
             }
             Link::File(url) => self.follow(&url),
@@ -1384,7 +1425,12 @@ impl Viewer {
     fn take_size(&mut self) {
         self.size = self.tty.size();
         let early = settling(self.born, self.resize_sent.take(), Instant::now());
-        self.start = zoom_start_at(self.start, self.size, self.probe.rex(), self.display > 1.0, early);
+        let start = zoom_start_at(self.start, self.size, self.probe.rex(), self.display > 1.0, early);
+        if !cfg!(target_os = "macos") && start != self.start {
+            screen::follow_cell(start.ypix.checked_div(start.rows).unwrap_or(0));
+            self.display = screen::display_scale();
+        }
+        self.start = start;
         (self.cell_w, self.cell_h) = self.probe.cell_px(self.size, self.display);
         let base = self.probe.cell_px(self.start, self.display).1;
         self.scale = page_scale(self.display, self.cell_h, base);
@@ -1943,7 +1989,7 @@ impl Viewer {
             Some((area, keys)) => {
                 let first = 500_000_000 + (std::process::id() % 1000) * 100_000;
                 let pk = self.preview.get_or_insert_with(|| Preview::new(self.tx.clone(), self.probe.medium(), self.probe.storage_limit(), first, !self.probe.iterm2()));
-                let job = (self.scale, config::theme(), config::font_smoothing(), self.probe.ghostty());
+                let job = (self.scale, config::theme(), config::font_smoothing(), self.probe.display_p3());
                 pk.want(keys.clone(), job, out, Instant::now());
                 pk.place(keys.first(), area, out);
                 let shown = pk.shown().map(|k| k.path.clone());
@@ -2051,6 +2097,8 @@ fn input_loop(fd: i32, tx: Sender<Event>, paused: Arc<AtomicBool>, first: Vec<u8
             let e = match input {
                 Input::Key(k) => Event::Key(k),
                 Input::Gone(id) => Event::Gone(id),
+                Input::Scheme(dark) => Event::Scheme(dark),
+                Input::Background(dark) => Event::Background(dark),
             };
             if tx.send(e).is_err() {
                 return;

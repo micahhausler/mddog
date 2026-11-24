@@ -801,7 +801,7 @@ fn match_rects(st: &mut State, a: usize, b: usize) -> Vec<(f32, f32, f32, f32, u
         }
         let x0 = st.fonts.char_x(*f, s, ls);
         let x1 = st.fonts.char_x(*f, s, le);
-        let (x, w) = (item.x + x0, x1 - x0);
+        let (x, w) = (item.x + x0.min(x1), (x1 - x0).abs());
         // Words are separate items: join a word to the one before it on the same line, so the space between
         // them highlights too. Inline code sits a little lower and shorter, so the line test compares centers
         // and the join takes both boxes. A gap wider than a line is tall (between table cells) stays a gap.
@@ -845,13 +845,12 @@ fn hit_char(st: &mut State, px: f32, py: f32) -> Option<usize> {
     let Kind::Text { s, f, .. } = &item.k else { return None };
     let (s, f, rel) = (s.clone(), *f, px - item.x - d);
     let mut idx = 0;
-    for i in 0..len {
-        let a = st.fonts.char_x(f, &s, i);
-        let b = st.fonts.char_x(f, &s, i + 1);
-        if rel < f32::midpoint(a, b) {
-            break;
+    let mut nearest = f32::INFINITY;
+    for i in 0..=len {
+        let d = (st.fonts.char_x(f, &s, i) - rel).abs();
+        if d <= nearest {
+            (nearest, idx) = (d, i);
         }
-        idx = i + 1;
     }
     Some(tx + idx)
 }

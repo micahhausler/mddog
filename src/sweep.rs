@@ -42,7 +42,7 @@ mod tests {
 
     /// A pid that is not running: spawn a child, wait for it, and keep its pid.
     fn gone_pid() -> i32 {
-        let mut c = std::process::Command::new("/usr/bin/true").spawn().unwrap();
+        let mut c = std::process::Command::new("true").spawn().unwrap();
         let pid = c.id() as i32;
         c.wait().unwrap();
         pid

@@ -1,4 +1,19 @@
-pub const KEYS: &str = "Scroll
+#[cfg(target_os = "macos")]
+macro_rules! copy_key {
+    () => {
+        "Cmd-c  "
+    };
+}
+
+#[cfg(not(target_os = "macos"))]
+macro_rules! copy_key {
+    () => {
+        "Super-c"
+    };
+}
+
+pub const KEYS: &str = concat!(
+    "Scroll
   j k, Down Up            scroll down, up one row (also Ctrl-e Ctrl-y)
   d u, Ctrl-d Ctrl-u      scroll down, up half a screen
   Space f b, PgDn PgUp    scroll down, up a full screen (also Ctrl-b up)
@@ -11,7 +26,9 @@ Mouse
   click a link            open it in the browser, or for a # link, scroll to its heading
   click a button          copy a code block, open or close <details>, zoom or expand a diagram
   drag, double-click      select text, select a word
-  Cmd-c                   copy the selected text
+  ",
+    copy_key!(),
+    "                 copy the selected text
   drag a scroll bar       scroll that code block or table sideways
   click the bottom row    run the key named where you click
 
@@ -38,10 +55,17 @@ Other
   T                       pick a theme: j k to move, Space or a click to try one, Enter to save it, Esc or T to cancel. The page still works meanwhile
   Ctrl-p                  list Markdown files in this repo or folder: type to filter, Enter to open
   Ctrl-z                  pause mddog and go back to the shell (fg to resume). Works in the search prompt and help too
-  q, Ctrl-c               quit mddog";
+  q, Ctrl-c               quit mddog"
+);
 
 #[cfg(test)]
 mod tests {
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn linux_names_the_super_key_for_copy() {
+        assert!(super::KEYS.contains("\n  Super-c                 copy the selected text\n") && !super::KEYS.contains("Cmd-c"));
+    }
+
     #[test]
     fn the_wheel_line_states_the_wheel_step() {
         assert!(super::KEYS.contains(&format!("scroll {} rows", super::super::app::WHEEL)));

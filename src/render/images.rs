@@ -50,6 +50,7 @@ pub struct Images {
     pub max_local: Option<u64>,
     /// Decoded bytes left for raster images. Past it, images show their alt text.
     pub budget: Option<u64>,
+    fitted: HashMap<String, Vec<(u32, u32, Rc<Bitmap>)>>,
 }
 
 impl Drop for Images {
@@ -139,7 +140,26 @@ pub fn sources(blocks: &[Block], out: &mut Vec<String>) {
 impl Images {
     pub fn new(dir: PathBuf) -> Images {
         let (tx, rx) = channel();
-        Images { dir, map: HashMap::new(), tx, rx, stops: vec![], offline: false, max_local: None, budget: None }
+        Images { dir, map: HashMap::new(), tx, rx, stops: vec![], offline: false, max_local: None, budget: None, fitted: HashMap::new() }
+    }
+
+    pub fn fitted(&mut self, src: &str, b: &Rc<Bitmap>, w: f32, h: f32) -> Rc<Bitmap> {
+        if cfg!(target_os = "macos") || (b.w as f32 <= w * 1.25 && b.h as f32 <= h * 1.25) {
+            return b.clone();
+        }
+        let (w, h) = (w.round().max(1.0) as u32, h.round().max(1.0) as u32);
+        let sizes = self.fitted.entry(src.to_string()).or_default();
+        if let Some((_, _, f)) = sizes.iter().find(|(fw, fh, _)| (*fw, *fh) == (w, h)) {
+            return f.clone();
+        }
+        let Some(view) = image::ImageBuffer::<image::Rgba<u8>, &[u8]>::from_raw(b.w, b.h, &b.px) else { return b.clone() };
+        let px = image::imageops::thumbnail(&view, w, h).into_raw();
+        let f = Rc::new(Bitmap { w, h, px });
+        if sizes.len() == 2 {
+            sizes.remove(0);
+        }
+        sizes.push((w, h, f.clone()));
+        f
     }
 
     pub fn get(&mut self, src: &str, wanted: &mut Vec<String>) -> Status {

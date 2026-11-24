@@ -340,6 +340,7 @@ fn an_svg_whose_rounded_size_is_too_big_still_draws() {
 }
 
 #[test]
+#[cfg(target_os = "macos")]
 fn a_display_p3_page_matches_the_cells_around_it() {
     // Ghostty shows image pixels as Display P3 but cell colors as sRGB, so the page's #0d1117 must go out in P3 to
     // look like the #0d1117 cells beside it.

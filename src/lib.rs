@@ -1,5 +1,5 @@
-#[cfg(not(target_os = "macos"))]
-compile_error!("mddog runs on macOS only");
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+compile_error!("mddog runs on macOS and Linux");
 
 #[doc(hidden)]
 pub mod config;

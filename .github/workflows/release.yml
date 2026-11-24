@@ -8,7 +8,42 @@ permissions:
   contents: write
 
 jobs:
+  linux:
+    permissions:
+      contents: read
+    strategy:
+      matrix:
+        include:
+          - { os: ubuntu-24.04, arch: x86_64 }
+          - { os: ubuntu-24.04-arm, arch: arm64 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends fontconfig fonts-noto-core fonts-noto-mono fonts-noto-color-emoji fonts-dejavu fonts-stix musl-tools
+      - name: Install Claude Code for the plugin checks
+        run: |
+          curl -fsSL https://claude.ai/install.sh | bash -s "$(cat plugins/claude-code/claude-code-version)"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Run the gate before publishing
+        run: ./check.sh
+      - name: Build a static binary
+        run: |
+          set -eu
+          target=$(uname -m)-unknown-linux-musl
+          rustup target add "$target"
+          cargo build --release --locked --target "$target"
+          cp "target/$target/release/mdd" mdd
+          file mdd | grep -Eq 'statically linked|static-pie linked' || { echo "::error::mdd is not static: $(file mdd)"; exit 1; }
+          ./mdd --version
+          tar czf "mdd-linux-${{ matrix.arch }}.tar.gz" mdd
+          sha256sum "mdd-linux-${{ matrix.arch }}.tar.gz" > "mdd-linux-${{ matrix.arch }}.tar.gz.sha256"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: linux-${{ matrix.arch }}
+          path: mdd-linux-*.tar.gz*
+
   release:
+    needs: linux
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
@@ -61,7 +96,11 @@ jobs:
             echo
             echo "**Full Changelog**: https://github.com/$GITHUB_REPOSITORY/compare/$prev...$GITHUB_REF_NAME"
           } > notes.md
-      - run: gh release create "$GITHUB_REF_NAME" mdd-macos-*.tar.gz mdd-macos-*.tar.gz.sha256 --notes-file notes.md
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: linux-*
+          merge-multiple: true
+      - run: gh release create "$GITHUB_REF_NAME" mdd-*.tar.gz mdd-*.tar.gz.sha256 --notes-file notes.md
         env:
           GH_TOKEN: ${{ github.token }}
       - name: Point the Homebrew formula at this release
@@ -70,15 +109,46 @@ jobs:
         run: |
           set -euo pipefail
           git clone --depth 1 "https://x-access-token:$TAP_TOKEN@github.com/qu8n/homebrew-tap.git" tap
-          f=tap/Formula/mddog.rb
-          for arch in arm64 x86_64; do
-            sum=$(cut -d' ' -f1 "mdd-macos-$arch.tar.gz.sha256")
-            # The sha256 line sits right under its url line.
-            sed -i '' -E -e "s|/download/v[^/]+/mdd-macos-$arch|/download/$GITHUB_REF_NAME/mdd-macos-$arch|" \
-              -e "/mdd-macos-$arch\.tar\.gz\"/{n;s/sha256 \"[0-9a-f]{64}\"/sha256 \"$sum\"/;}" "$f"
-            grep -q "sha256 \"$sum\"" "$f" || { echo "::error::$arch checksum not written to $f"; exit 1; }
-          done
-          grep -c "/download/$GITHUB_REF_NAME/" "$f" | grep -qx 2 || { echo "::error::urls not updated in $f"; exit 1; }
+          sum() { cut -d' ' -f1 "mdd-$1.tar.gz.sha256"; }
+          base="https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME"
+          cat > tap/Formula/mddog.rb <<EOF
+          class Mddog < Formula
+            desc "Render Markdown in the terminal the way a browser shows it"
+            homepage "https://mddog.pages.dev"
+            license "MIT"
+
+            on_macos do
+              on_arm do
+                url "$base/mdd-macos-arm64.tar.gz"
+                sha256 "$(sum macos-arm64)"
+              end
+              on_intel do
+                url "$base/mdd-macos-x86_64.tar.gz"
+                sha256 "$(sum macos-x86_64)"
+              end
+            end
+
+            on_linux do
+              on_arm do
+                url "$base/mdd-linux-arm64.tar.gz"
+                sha256 "$(sum linux-arm64)"
+              end
+              on_intel do
+                url "$base/mdd-linux-x86_64.tar.gz"
+                sha256 "$(sum linux-x86_64)"
+              end
+            end
+
+            def install
+              bin.install "mdd"
+            end
+
+            test do
+              assert_match version.to_s, shell_output("#{bin}/mdd --version")
+            end
+          end
+          EOF
+          ruby -c tap/Formula/mddog.rb
           cd tap
           git -c user.name=github-actions[bot] -c user.email=41898282+github-actions[bot]@users.noreply.github.com \
             commit -am "mddog ${GITHUB_REF_NAME#v}"

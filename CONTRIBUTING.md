@@ -9,7 +9,7 @@ How to check, test, debug, and release mddog. For a map of the code, read `ARCHI
 - PR titles follow [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/): `type(scope)!: summary`, 72 characters at most. `type` is one of `feat`, `fix`, `refactor`, `perf`, `docs`, `test`, `build`, `ci`, `chore`, or `style`. `scope` is optional, in lowercase letters, digits and dashes. `main` takes squash merges only, and the squash commit uses the PR title as its subject, so the `main` ruleset requires the `pr-title` check (`.github/workflows/pr-title.yml`). `.githooks/subject-check` holds the rule, and both the hook and the check run it. The check runs `main`'s copy of the workflow and script, so a PR can't change the rule it is checked against.
 - `[lints.clippy]` in `Cargo.toml` turns on some pedantic and nursery lints, `unwrap_used` among them. `clippy.toml` exempts unit tests, and each `tests/*.rs` file that needs `unwrap` has its own `#![expect]` or `#![allow]`. Outside tests, an `expect` names the invariant that holds, such as a built-in asset or a constant regex.
 - Each `unsafe` block or impl has a `// SAFETY:` comment on the line above that names the invariant it relies on, and each `unsafe fn` has a `# Safety` doc section. Clippy's `undocumented_unsafe_blocks` enforces the comment, and `unnecessary_safety_comment` flags one left on safe code. Before you add a block, check whether the binding or std already has a safe call. When the same call repeats, wrap it once in a small safe function next to its callers, as `tmp::mine` does for `getuid`.
-- CI (`.github/workflows/check.yml`) runs `./check.sh` on every pull request and on every push that changes more than `website/`. Pull requests always run it, because the `main` ruleset requires its `check` result. It runs on a macOS runner, because the renderer and the pty tests need macOS. Only runs on `main` save the build cache.
+- CI (`.github/workflows/check.yml`) runs `./check.sh` on every pull request and on every push that changes more than `website/`. Pull requests always run it, because the `main` ruleset requires its `check` result. It runs on `macos-latest`, `ubuntu-24.04`, and `ubuntu-24.04-arm`, because the renderer differs on each platform (CoreText and CoreGraphics on macOS, cosmic-text and tiny-skia on Linux). The `check` job passes only when all three pass. Only runs on `main` save the build cache.
 - Dependencies build at `opt-level = 2` in dev builds, locally too, so tests run faster. Each dependency builds more slowly the first time.
 - `python3 reference/keymap-check.py` checks that every test named in `docs/behavior.md` ran and passed.
 - `plugins/claude-code/check.sh` checks the plugin: `tsc`, then `claude plugin validate`, then `claude plugin test`. It needs `claude` and `npx`. `tsc` needs the plugin API types, which Claude Code writes only when it loads a mod or the `/plugin-authoring` skill. No command writes them, so the script runs `claude -p /plugin-authoring` logged out and takes the file that run writes into `CLAUDE_CODE_TMPDIR`. Claude Code doesn't document this, so CI installs the version in `plugins/claude-code/claude-code-version`, and a new release can't break the build by itself. Move the pin by hand. The tracked `plugins/claude-code/types/` is a different folder: it types the plugin's own `open` tool.
@@ -18,6 +18,14 @@ How to check, test, debug, and release mddog. For a map of the code, read `ARCHI
 - `.github/workflows/website.yml` deploys the site to Cloudflare Pages (https://mddog.pages.dev) on every push to `main` that changes `website/`. It needs the `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` repo secrets. To deploy by hand, run `pnpm run deploy` in `website/`. Plain `pnpm deploy` is a different, built-in pnpm command, and it fails.
 
 ## Tests
+
+To build and test on Linux from a Mac, run the suite in a container:
+
+```sh
+docker run --rm --shm-size=2g -v "$PWD":/src -w /src rust:1-bookworm sh -c 'apt-get update && apt-get install -y fontconfig fonts-noto-core fonts-noto-mono fonts-dejavu fonts-stix && cargo test'
+```
+
+The pty tests need a `/dev/shm` bigger than Docker's 64 MB default, so pass `--shm-size`. The render tests need fonts, so install the font packages above.
 
 | File | Covers |
 |---|---|
@@ -32,8 +40,8 @@ How to check, test, debug, and release mddog. For a map of the code, read `ARCHI
 - `tests/search.rs` is an ordinary test file. Each test makes an `Engine`, loads a Markdown string, and calls the same methods the viewer does. Points on the page come from search rects and the layout, not from fixed pixels. `docs/behavior.md` names these tests.
 - `tests/math.rs` renders each `fixtures/math/` file's `Doc` into one line per block that holds math or a `$`: inline math as `⟨...⟩`, display math as `⟦...⟧`, and code spans in backticks. It must match `tests/math.golden` exactly. `UPDATE_GOLDEN=1 cargo test --test math` rewrites it. `fixtures/math/SOURCES.md` lists where each fixture came from.
 - A unit test in `src/render/highlight/textmate.rs` checks TextMate output against `tests/textmate.golden`. `UPDATE_GOLDEN=1 cargo test` rewrites it.
-- Every test that launches `mdd` sets `MDDOG_CACHE_DIR` to `$TMPDIR/mddog-test-cache`, so `./check.sh` leaves `~/Library/Caches/mddog/` alone. Unit tests of `remote` pass no disk folder to `fetch_in`, so they skip the disk cache.
-- The pty tests in `tests/help.rs` that click at a cell and expect a given word or button set `MDDOG_SCALE=2`, since GitHub's macOS runners have a 1x screen. The others run at the screen's own scale, since a forced 2x on a 1x screen changes how tiles line up.
+- Every test that launches `mdd` sets `MDDOG_CACHE_DIR` to `$TMPDIR/mddog-test-cache`, so `./check.sh` leaves the real cache (`~/Library/Caches/mddog/` on macOS, `~/.cache/mddog/` on Linux) alone. Unit tests of `remote` pass no disk folder to `fetch_in`, so they skip the disk cache.
+- The pty tests in `tests/help.rs` that click at a cell and expect a given word or button set `MDDOG_SCALE=2`, since CI runners have a 1x screen or a small cell height. The others run at the screen's own scale, since a forced 2x on a 1x screen changes how tiles line up.
 
 ## Reference tools
 
@@ -61,7 +69,7 @@ How to check, test, debug, and release mddog. For a map of the code, read `ARCHI
 | `MDDOG_DUMP_VIEW=FILE` | `mdd` | With `MDDOG_TRACE`, write a PNG of the viewport after each frame |
 | `MDDOG_DUMP_TILES=DIR` | `mdd` | Write each tile as it is sent |
 | `MDDOG_DEBUG` | `mdd` | Print timing marks to stderr |
-| `MDDOG_CACHE_DIR=DIR` | `mdd` | Use `DIR` as the cache root in place of `~/Library/Caches/mddog` |
+| `MDDOG_CACHE_DIR=DIR` | `mdd` | Use `DIR` as the cache root in place of `~/Library/Caches/mddog` on macOS or `$XDG_CACHE_HOME/mddog` (default `~/.cache/mddog`) on Linux |
 | `TERM_PROGRAM=herdr` | `mdd` | Use herdr's storage limit, and send selection and search changes as bands (an XTVERSION reply that starts with `libghostty` does the same) |
 | `TERM_PROGRAM=rex` | `mdd` | Use Rex's storage limit, send selection and search changes as bands, and take an 80x24 pane at 640x384 px as not shown yet (an XTVERSION reply that starts with `rex ` does the same) |
 | `EDITOR` | `mdd` | The editor for `e` |
@@ -78,4 +86,4 @@ Releases use [cargo-release](https://github.com/crate-ci/cargo-release) (`brew i
 
 1. On a clean `main`, run `cargo release patch` (or `minor`, `major`, or an exact version) to see what it will do. It changes nothing.
 2. Run it again with `--execute`. It runs `plugins/claude-code/check.sh`, sets the version in `Cargo.toml`, `Cargo.lock` and `plugins/claude-code/.claude-plugin/plugin.json`, commits as `chore: release X.Y.Z`, tags `vX.Y.Z`, and pushes both.
-3. The tag starts `.github/workflows/release.yml`. It checks that the tag matches both versions, runs `./check.sh`, then builds both architectures and publishes the release, with every commit since the last tag as its notes. Last, it points `Formula/mddog.rb` in `qu8n/homebrew-tap` at the new tarballs and pushes, using the `HOMEBREW_TAP_TOKEN` repo secret (a fine-grained token with write access to that repo's contents).
+3. The tag starts `.github/workflows/release.yml`. It checks that the tag matches both versions, runs `./check.sh`, then builds macOS (arm64 and x86_64) and Linux (x86_64 and aarch64, static musl) and publishes the release, with every commit since the last tag as its notes. Last, it writes the whole of `Formula/mddog.rb` in `qu8n/homebrew-tap`, with `on_macos` and `on_linux` blocks pointing at the new tarballs, and pushes, using the `HOMEBREW_TAP_TOKEN` repo secret (a fine-grained token with write access to that repo's contents). Each release replaces the file, so change the formula in `release.yml`, not in the tap.

@@ -48,6 +48,8 @@ theme = "light:obsidian-light,dark:obsidian-dark"
 
 With a pair, mddog follows the [macOS appearance](https://support.apple.com/en-bh/guide/mac-help/mchl52e1c2d2/mac): light mode automatically uses the `light` theme, and dark mode the `dark` theme.
 
+On Linux, mddog follows the terminal's light or dark mode instead. The Claude Code plugin follows the desktop's setting.
+
 A theme is a built-in name or a path to a custom theme file.
 
 - Built-in themes include `github-light`, `github-dark`, `obsidian-light`, and `obsidian-dark`
@@ -61,7 +63,7 @@ See [Themes](/docs/themes) for more about themes and how to make your own.
 
 In the viewer, you can select text by dragging it with the mouse or double-clicking to select a word.
 
-By default, `copy_on_select` is set to `false`: selecting text only highlights it, and `Cmd-c` copies it.
+By default, `copy_on_select` is set to `false`: selecting text only highlights it, and `Cmd-c` copies it (`Super-c` on Linux).
 
 When set to `true`, mddog automatically copies to clipboard the text you select. `Cmd-c` might not always work in certain terminals (such as iTerm2), so this option is a good workaround.
 
@@ -125,7 +127,7 @@ The file list always keeps at least 40 columns beside the preview, or 10 rows ab
 
 ## Font smoothing
 
-mddog automatically applies font smoothing if your macOS system does. This makes text look better on some displays, but it can make it blurry on others.
+mddog automatically applies font smoothing if your macOS system does. On Linux, it always does. This makes text look better on some displays, but it can make it blurry on others.
 
 To turn font smoothing off for macOS and mddog, run this and then restart mddog:
 

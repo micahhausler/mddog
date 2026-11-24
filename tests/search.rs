@@ -579,13 +579,13 @@ fn c4_grab_thumb_stays() {
     let (r, by) = bar(&e);
     // The thumb starts at the track's left end. A press off its center doesn't move it.
     assert!(e.code_grab(r[0] + 8.0, by, 0.0).is_some());
-    assert_eq!(e.code_positions(), [0.0]);
+    assert!(e.code_positions()[0].abs() < 1e-3, "{:?}", e.code_positions());
     // A drag keeps the same point of the thumb under the pointer.
     e.code_drag(r[0] + 18.0, by);
     let moved: f64 = f64::from(e.code_positions()[0]);
     e.code_drag(r[0] + 8.0, by);
     assert!(moved > 0.0);
-    assert_eq!(e.code_positions(), [0.0]);
+    assert!(e.code_positions()[0].abs() < 1e-3, "{:?}", e.code_positions());
 }
 
 #[test]

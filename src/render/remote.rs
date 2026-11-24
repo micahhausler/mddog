@@ -110,7 +110,8 @@ fn system_lookup(host: &str, port: u16) -> std::io::Result<Vec<SocketAddr>> {
 
 fn agent_with(lookup: Lookup, allow: Allow) -> ureq::Agent {
     use ureq::tls::{RootCerts, TlsConfig, TlsProvider};
-    let tls = TlsConfig::builder().provider(TlsProvider::NativeTls).root_certs(RootCerts::PlatformVerifier).build();
+    let provider = if cfg!(target_os = "macos") { TlsProvider::NativeTls } else { TlsProvider::Rustls };
+    let tls = TlsConfig::builder().provider(provider).root_certs(RootCerts::PlatformVerifier).build();
     let config = ureq::Agent::config_builder()
         // A proxy would be resolved instead of the image host.
         .proxy(None)
@@ -256,7 +257,10 @@ fn cache_dir() -> PathBuf {
         return std::path::absolute(&dir).unwrap_or_else(|_| PathBuf::from(dir));
     }
     let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
-    home.join("Library/Caches/mddog")
+    if cfg!(target_os = "macos") {
+        return home.join("Library/Caches/mddog");
+    }
+    std::env::var_os("XDG_CACHE_HOME").filter(|d| !d.is_empty()).map(PathBuf::from).filter(|d| d.is_absolute()).unwrap_or_else(|| home.join(".cache")).join("mddog")
 }
 
 /// The longest any response is kept; also the age at which `prune` removes a file.

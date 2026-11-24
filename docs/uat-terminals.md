@@ -2,7 +2,7 @@
 
 Manual tests of mddog in each terminal, alone and inside a multiplexer. The results feed the [Compatibility](https://mddog.pages.dev/docs/compatibility) page of the docs.
 
-Build under test: `7699b95`, run as `target/release/mdd` from a worktree, first on `PATH`. Tested on 2026-11-07 on a Retina Mac with macOS 27.2. Agents drove the terminals with AppleScript keys and CoreGraphics mouse events, and checked screenshots.
+Build under test: `7699b95`, run as `target/release/mdd` from a worktree, first on `PATH`. Tested on 2026-11-07 on a Retina Mac with macOS 27.2. Agents drove the terminals with AppleScript keys and CoreGraphics mouse events, and checked screenshots. The matrix below is for macOS. Linux results are under [Linux](#linux).
 
 ## Matrix
 
@@ -85,6 +85,27 @@ New in this round. Rex reports `TERM_PROGRAM=rex` and speaks the kitty graphics 
 
 - Alone: all 12 checks pass, including `Cmd-c`. `G` settles in under 1 s.
 - Rex's own panes and tabs: a split lays mddog out again at the narrower width, with the image inside its pane. A new tab doesn't show any image from mddog's tab. Zoom Pane couldn't be tested. Rex's pane focus moved to the other pane after a tab closed, which is a Rex quirk.
+
+## Linux
+
+Build under test: `ca3f475`, a release build run in Debian 12 on aarch64 (Docker), in each terminal under Xvfb with software OpenGL. Agents drove the terminals with `xdotool` keys and checked screenshots. Fonts: Noto, Noto CJK, Noto Color Emoji, DejaVu and STIX from Debian packages.
+
+| Terminal | Version | Alone | Notes |
+| --- | --- | --- | --- |
+| kitty | 0.26.5 | ✅ | Shared memory and direct transfer. Answers OSC 11, not `CSI ? 996 n`, so live scheme changes need a newer kitty |
+| Konsole | 22.12.3 | ✅ | Direct transfer only (shared memory and temp files answer `ENOTSUPPORTED`). Answers OSC 11 |
+| kitty | 0.51.0 | ✅ | Ubuntu 24.04 on x86_64 (a Google Cloud VM). Answers `CSI ? 996 n` and sends mode 2031 reports: `kitty @ set-colors background=#ffffff` turned the page light. A drag with `copy_on_select` reached the X clipboard through OSC 52 |
+| Ghostty | 1.4.0 | ✅ | Same VM, from the snap. Answers `CSI ? 996 n` with the desktop's scheme (light), not its dark background, so mddog takes OSC 11 over it. A drag with `copy_on_select` reached the X clipboard |
+| WezTerm | 20240203-110809 | ✅ | Same VM, from the release `.deb`, software renderer. Open, page down, and search work. Answers `CSI 16 t` with an 8x16 cell while its window holds 10x22 cells, and mddog takes the window's |
+| kitty on Wayland | 0.51.0 | ✅ | Same VM, under a headless sway. The page draws as on X11 |
+| Alacritty, xterm, GNOME Terminal, foot | Ubuntu 24.04 packages (Alacritty 0.13.2, foot 1.16.2 under sway) | 🚫 | mddog says the terminal can't show images and exits with code 1 |
+| tmux | Ubuntu 24.04 package | 🚫 | mddog refuses with the tmux message |
+
+Checks: open a file, page down, search, the theme list with Follow terminal, the file list with a filter and its preview, opening a file from the list, light and dark from the terminal's background, and a page that scales with a bigger terminal font. The Ubuntu VM round also ran the full test suite natively, built the static x86_64 release binary, and installed it with `install.sh`. In kitty, a click on a link ran `xdg-open` with its URL, and with no `xdg-open` the status row said links can't open. Pages rendered in Japanese, German, and C locales.
+
+Distros, each in a container on that VM, with the static x86_64 binary and one font package: Alpine, Fedora, Arch, Ubuntu, Debian, and a NixOS-style setup (fonts in `/nix/store`, a generated `/etc/fonts/fonts.conf`, no `fc-match`). All drew the page. Remote https images loaded on all but Debian slim, which ships no CA certificates. With no fonts at all, mddog names the package to install.
+
+Not checked on Linux: a physical HiDPI screen with fractional scaling (Xvfb can't fake one for kitty), and herdr.
 
 ## Bugs
 

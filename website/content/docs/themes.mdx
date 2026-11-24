@@ -14,7 +14,7 @@ mddog has four built-in themes:
 | `github-light`, `github-dark` | How GitHub renders Markdown |
 | `obsidian-light`, `obsidian-dark` | How Obsidian renders Markdown |
 
-By default, mddog uses the GitHub pair and follows the [macOS appearance](https://support.apple.com/en-bh/guide/mac-help/mchl52e1c2d2/mac).
+By default, mddog uses the GitHub pair and follows the [macOS appearance](https://support.apple.com/en-bh/guide/mac-help/mchl52e1c2d2/mac). On Linux, it follows the terminal's light or dark mode.
 
 To pick a theme, set [`theme`](/docs/config#theme) in your config:
 
@@ -142,7 +142,7 @@ The built-in themes in [`assets/themes/`](https://github.com/qu8n/mddog/tree/mai
 | `--mddog-code-size` | code size, in em of the text around it | `0.85` |
 | `--mddog-code-line-height` | line height in code blocks | `1.45` |
 
-A font list works like CSS's `font-family`: mddog takes the first installed font. `system-ui` is the macOS system font, and `ui-monospace` is SF Mono. Quote a name with spaces. When no name matches, body text uses the system font and code uses Menlo.
+A font list works like CSS's `font-family`: mddog takes the first installed font. `system-ui` is the macOS system font, and `ui-monospace` is SF Mono. On Linux, they are fontconfig's `sans-serif` and `monospace` fonts. Quote a name with spaces. When no name matches, body text uses the system font and code uses Menlo, or the fontconfig fonts on Linux.
 
 A heading weight works like CSS's `font-weight`. The system font draws every weight, so Obsidian's `700 680 660 640 620 600` steps down smoothly. A font with fixed cuts takes its nearest one: Menlo has only regular and bold, so its 600 is bold. Bold text and table headers stay at 600 whatever the headings use.
 

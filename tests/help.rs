@@ -105,7 +105,7 @@ fn start_sized(exe: &std::path::Path, args: &[&str], dir: Option<&std::path::Pat
     {
         let _guard = OPENPTY.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         // SAFETY: each pointer is a valid out-pointer or null, which openpty allows for the name and termios.
-        assert_eq!(unsafe { libc::openpty(&mut master, &mut slave, std::ptr::null_mut(), std::ptr::null_mut(), &mut size) }, 0);
+        assert_eq!(unsafe { libc::openpty(&mut master, &mut slave, std::ptr::null_mut(), std::ptr::null_mut(), &raw mut size) }, 0);
     }
     // SAFETY: openpty returned a new fd that nothing else owns.
     let slave = unsafe { OwnedFd::from_raw_fd(slave) };
@@ -127,7 +127,7 @@ fn start_sized(exe: &std::path::Path, args: &[&str], dir: Option<&std::path::Pat
     unsafe {
         cmd.pre_exec(move || {
             libc::setsid();
-            libc::ioctl(0, libc::TIOCSCTTY.into(), 0);
+            libc::ioctl(0, libc::TIOCSCTTY as _, 0);
             if job {
                 run_as_job();
             }
@@ -268,14 +268,15 @@ fn ctrl_c_in_the_editor_keeps_the_viewer() {
     let Viewer { mut child, mut tty, out } = open(GFM, 80, &[("EDITOR", "sleep 2;:")]);
     wait_for(&out, 0, b"a=p,");
     tty.write_all(b"e").unwrap();
-    wait_for(&out, 0, b"\x1b[?1049l");
+    let left = wait_for(&out, 0, b"\x1b[?1049l");
     std::thread::sleep(Duration::from_millis(300));
     tty.write_all(b"\x03").unwrap();
-    let after = wait_for(&out, 0, b"Editor");
+    let back = wait_for(&out, left, b"\x1b[?1049h");
+    wait_for(&out, back, b"Editor");
     // Checked before writing again: a viewer that quit has closed the pty, so the write would fail
     // with EIO and hide why.
     assert!(exits_within(&mut child, Duration::from_millis(1500)).is_none(), "Ctrl-C in the editor quit the viewer");
-    wait_for(&out, after, b"a=p,");
+    wait_for(&out, back, b"a=p,");
     tty.write_all(b"q").unwrap();
     let quit = exits_within(&mut child, LIMIT);
     let _ = child.kill();
@@ -532,7 +533,7 @@ fn a_rex_placeholder_size_at_launch_is_no_font_zoom() {
     let env = [("MDDOG_TRACE", trace.to_str().unwrap()), ("MDDOG_SCALE", "2"), ("XDG_CONFIG_HOME", dir.to_str().unwrap()), ("TERM_PROGRAM", "rex")];
     let size = libc::winsize { ws_row: 24, ws_col: 80, ws_xpixel: 640, ws_ypixel: 384 };
     let Viewer { mut child, tty, out } = start_sized(env!("CARGO_BIN_EXE_mdd").as_ref(), &[GFM], None, size, probe_reply((8, 16)), &env, false);
-    wait_trace(&trace, "terminal probed");
+    wait_trace(&trace, "size read");
     resize(&tty, libc::winsize { ws_row: 40, ws_col: 100, ws_xpixel: 100 * 18, ws_ypixel: 40 * 38 });
     wait_trace(&trace, "mark resize");
     wait_for(&out, 0, b"a=p,");
@@ -747,10 +748,12 @@ fn a_resize_clears_the_old_status_row() {
     assert!(cleared, "the status row stayed at its old row after a resize");
 }
 
+#[cfg(target_os = "macos")]
 /// A copy of the binary with its own defaults domain, named after it, so a test can set the macOS
 /// appearance that copy sees without changing the system's.
 struct Appearance(std::path::PathBuf);
 
+#[cfg(target_os = "macos")]
 impl Appearance {
     fn new(dir: &std::path::Path) -> Self {
         let exe = dir.join(format!("mddog-appearance-{}", std::process::id()));
@@ -770,6 +773,7 @@ impl Appearance {
     }
 }
 
+#[cfg(target_os = "macos")]
 impl Drop for Appearance {
     fn drop(&mut self) {
         let _ = Command::new("defaults").args(["delete", self.domain()]).status();
@@ -778,6 +782,71 @@ impl Drop for Appearance {
 }
 
 #[test]
+#[cfg(not(target_os = "macos"))]
+fn help_follows_the_terminal_scheme() {
+    let dir = scratch("scheme");
+    std::fs::write(dir.join("mddog/config.toml"), "theme = \"light:github-light,dark:obsidian-dark\"\n").unwrap();
+    let Viewer { mut child, mut tty, out } = open(GFM, 100, &[("XDG_CONFIG_HOME", dir.to_str().unwrap())]);
+    let shown = wait_for(&out, 0, b"a=p,");
+    let on = find(&out.lock().unwrap()[..shown], b"\x1b[?2031h").is_some();
+    let asked = out.lock().unwrap().len();
+    tty.write_all(b"\x1b[?997;2n").unwrap();
+    wait_for(&out, asked, b"\x1b]11;?");
+    tty.write_all(b"\x1b]11;rgb:ffff/ffff/ffff\x1b\\").unwrap();
+    std::thread::sleep(Duration::from_millis(500));
+    let before = out.lock().unwrap().len();
+    tty.write_all(b"?").unwrap();
+    let keys = wait_for(&out, before, b"mddog keys");
+    let clear = format!("{}\x1b[H\x1b[J", mddog::theme::builtin("github-light").unwrap().palette.reset());
+    let light = find(&out.lock().unwrap()[before..keys], clear.as_bytes()).is_some();
+    tty.write_all(b"q").unwrap();
+    let _ = exits_within(&mut child, LIMIT);
+    let _ = child.kill();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(on, "the viewer did not ask for scheme reports");
+    assert!(light, "help kept the dark theme after the terminal turned light");
+}
+
+#[test]
+#[cfg(not(target_os = "macos"))]
+fn a_scheme_change_under_the_file_list_waits_for_a_page() {
+    let dir = scratch("scheme-list");
+    std::fs::create_dir_all(dir.join(".git")).unwrap();
+    std::fs::write(dir.join("a.md"), "# A title\n").unwrap();
+    std::fs::write(dir.join("mddog/config.toml"), "theme = \"light:github-light,dark:obsidian-dark\"\n").unwrap();
+    let trace = dir.join("trace.log");
+    let env = [("MDDOG_TRACE", trace.to_str().unwrap()), ("XDG_CONFIG_HOME", dir.to_str().unwrap())];
+    let Viewer { mut child, mut tty, out } = start(&[], Some(&dir), 80, &env, false);
+    wait_for(&out, 0, b"A title");
+    let loads = || std::fs::read_to_string(&trace).unwrap_or_default().matches("mark page loaded").count();
+    tty.write_all(b"\x1b[?997;2n\x1b]11;rgb:ffff/ffff/ffff\x1b\\").unwrap();
+    std::thread::sleep(Duration::from_millis(500));
+    let before_open = loads();
+    tty.write_all(b"\r").unwrap();
+    wait_trace(&trace, "file opened");
+    let opened = loads();
+    tty.write_all(b"\x10").unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    tty.write_all(b"\x1b[?997;1n\x1b]11;rgb:0d0d/1111/1717\x1b\\").unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    let listed = loads();
+    tty.write_all(b"\x1b").unwrap();
+    let end = Instant::now() + LIMIT;
+    while loads() == listed && Instant::now() < end {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let closed = loads();
+    tty.write_all(b"q").unwrap();
+    let _ = exits_within(&mut child, LIMIT);
+    let _ = child.kill();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(before_open, 0, "a scheme change laid out a page before any file was open");
+    assert_eq!(listed, opened, "a scheme change laid out the hidden page while the list was up");
+    assert_eq!(closed, listed + 1, "closing the list kept the page in the old theme");
+}
+
+#[test]
+#[cfg(target_os = "macos")]
 fn help_follows_an_appearance_change() {
     let dir = scratch("appearance");
     std::fs::write(dir.join("mddog/config.toml"), "theme = \"light:github-light,dark:obsidian-dark\"\n").unwrap();
@@ -897,6 +966,7 @@ fn deleting_the_selected_file_takes_its_preview_down() {
 }
 
 #[test]
+#[cfg(target_os = "macos")]
 fn a_list_at_startup_takes_the_real_display_scale() {
     let dir = scratch("listscale");
     std::fs::create_dir_all(dir.join(".git")).unwrap();
@@ -960,6 +1030,7 @@ fn a_pixel_click_in_the_list_follows_a_font_size_change() {
     let Viewer { mut child, tty, out } = start_replying(env!("CARGO_BIN_EXE_mdd").as_ref(), &[dir.to_str().unwrap()], None, 80, (18, 38), reply, &env, false);
     wait_for(&out, 0, b"\x1b[c");
     wait_for(&out, 0, b"Title 5");
+    wait_trace(&trace, "size read");
     // A bigger font: the same 80 by 40 cells, 50 pixels tall.
     let before = out.lock().unwrap().len();
     let size = libc::winsize { ws_row: 40, ws_col: 80, ws_xpixel: 80 * 24, ws_ypixel: 40 * 50 };
@@ -1098,27 +1169,29 @@ fn tiles_line_up_at_an_odd_cell_height() {
 const RETINA: (&str, &str) = ("MDDOG_SCALE", "2");
 
 /// Sends `mouse` with `copy_on_select` set to `on`, and waits for a copy when `copies` says one should come. Returns
-/// the text of each OSC 52 copy the viewer wrote, and what it sent to a stand-in pbcopy.
+/// the text of each OSC 52 copy the viewer wrote, and what it sent to a stand-in copy command.
 fn mouse_copies(on: bool, mouse: &[u8], copies: bool) -> (Vec<String>, String) {
     let dir = scratch(&format!("select-{on}-{}", mouse.len()));
     std::fs::write(dir.join("mddog/config.toml"), format!("copy_on_select = {on}\n")).unwrap();
     let bin = dir.join("bin");
     std::fs::create_dir(&bin).unwrap();
-    std::fs::write(bin.join("pbcopy"), format!("#!/bin/sh\ncat >> '{}'\n", dir.join("clip").display())).unwrap();
-    std::fs::set_permissions(bin.join("pbcopy"), std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    let helper = bin.join(COPY_COMMAND);
+    std::fs::write(&helper, format!("#!/bin/sh\ncat >> '{}'\n", dir.join("clip").display())).unwrap();
+    std::fs::set_permissions(&helper, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
     let file = dir.join("a.md");
     std::fs::write(&file, "alpha beta gamma\n\ndelta epsilon zeta\n").unwrap();
-    let env = [("XDG_CONFIG_HOME", dir.to_str().unwrap()), ("PATH", &path), RETINA];
+    let env = [("XDG_CONFIG_HOME", dir.to_str().unwrap()), ("PATH", &path), ("DISPLAY", ":0"), ("WAYLAND_DISPLAY", ""), RETINA];
     let Viewer { mut child, mut tty, out } = open(file.to_str().unwrap(), 80, &env);
     wait_for(&out, 0, b"a=p,");
     let before = out.lock().unwrap().len();
     tty.write_all(mouse).unwrap();
     let clip = dir.join("clip");
-    // A copy writes OSC 52 and starts pbcopy on a thread, and a quit can come before pbcopy has run, so this waits
+    // A copy writes OSC 52 and starts the copy command on a thread, and a quit can come before it has run, so this waits
     // on both. With no copy coming, the wait is a fixed window for a wrong one to show up in.
     let end = Instant::now() + if copies { LIMIT } else { Duration::from_millis(800) };
-    while !(find(&out.lock().unwrap()[before..], b"\x1b]52;c;").is_some() && std::fs::metadata(&clip).is_ok_and(|m| m.len() > 0)) && Instant::now() < end {
+    let pasted = || std::fs::metadata(&clip).is_ok_and(|m| m.len() > 0);
+    while !(find(&out.lock().unwrap()[before..], b"\x1b]52;c;").is_some() && pasted()) && Instant::now() < end {
         std::thread::sleep(Duration::from_millis(20));
     }
     tty.write_all(b"q").unwrap();
@@ -1132,13 +1205,15 @@ fn mouse_copies(on: bool, mouse: &[u8], copies: bool) -> (Vec<String>, String) {
         .skip(1)
         .map(|s| {
             let b64 = s.split('\x1b').next().unwrap();
-            let mut dec = Command::new("base64").arg("-D").stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+            let mut dec = Command::new("base64").arg("-d").stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
             dec.stdin.take().unwrap().write_all(b64.as_bytes()).unwrap();
             String::from_utf8(dec.wait_with_output().unwrap().stdout).unwrap()
         })
         .collect();
     (copies, clip)
 }
+
+const COPY_COMMAND: &str = if cfg!(target_os = "macos") { "pbcopy" } else { "xclip" };
 
 const DRAG: &[u8] = b"\x1b[<0;2;1M\x1b[<32;40;3M\x1b[<32;79;6M\x1b[<0;79;6m";
 
@@ -1147,7 +1222,7 @@ fn copy_on_select_copies_a_drag() {
     let (copies, clip) = mouse_copies(true, DRAG, true);
     assert_eq!(copies.len(), 1, "{copies:?}");
     assert!(copies[0].contains("alpha beta gamma") && copies[0].contains("delta epsilon zeta"), "{copies:?}");
-    assert_eq!(clip, copies[0], "pbcopy and OSC 52 got different text");
+    assert_eq!(clip, copies[0], "the copy command and OSC 52 got different text");
     assert_eq!(mouse_copies(false, DRAG, false), (vec![], String::new()), "a drag copied with copy_on_select off");
 }
 
@@ -1165,7 +1240,7 @@ fn cmd_c_copies_the_selection() {
     let (copies, clip) = mouse_copies(false, &[DRAG, CMD_C].concat(), true);
     assert_eq!(copies.len(), 1, "{copies:?}");
     assert!(copies[0].contains("alpha beta gamma") && copies[0].contains("delta epsilon zeta"), "{copies:?}");
-    assert_eq!(clip, copies[0], "pbcopy and OSC 52 got different text");
+    assert_eq!(clip, copies[0], "the copy command and OSC 52 got different text");
     assert_eq!(mouse_copies(false, CMD_C, false), (vec![], String::new()), "Cmd-C copied with nothing selected");
 }
 
@@ -1189,7 +1264,7 @@ fn kitty_ctrl_c_quits_and_pops_the_keyboard_flags() {
 fn the_pointer_shape_follows_the_mouse() {
     let dir = scratch("pointer");
     let file = dir.join("a.md");
-    let words = "lorem ipsum dolor sit amet consectetur adipiscing elit ".repeat(200);
+    let words = "loremipsumdolorsitamet consecteturadipiscingelit ".repeat(200);
     std::fs::write(&file, format!("{words}\n\n[{words}](https://example.com)\n")).unwrap();
     let Viewer { mut child, mut tty, out } = open(file.to_str().unwrap(), 80, &[]);
     let drawn = wait_for(&out, 0, b"a=p,");

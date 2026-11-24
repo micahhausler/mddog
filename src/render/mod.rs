@@ -1,5 +1,8 @@
 //! The renderer: Markdown to a display list, drawn with CoreText and CoreGraphics.
 
+#[cfg_attr(target_os = "macos", path = "canvas_cg.rs")]
+#[cfg_attr(not(target_os = "macos"), path = "canvas_skia.rs")]
+mod canvas;
 pub mod doc;
 pub mod engine;
 pub mod highlight;

@@ -383,7 +383,7 @@ pub enum Choice {
 impl Choice {
     pub fn label(&self) -> &str {
         match self {
-            Choice::Follow { .. } => "Follow macOS",
+            Choice::Follow { .. } => FOLLOW_LABEL,
             Choice::Theme { value, .. } => value,
         }
     }
@@ -488,7 +488,7 @@ pub fn save(choice: &Choice) -> Result<String, String> {
         replace(&path, &text, &new).map_err(|e| format!("Can't write {}: {}", tilde(&path), crate::term::io_error(&e)))?;
     }
     Ok(match choice {
-        Choice::Follow { .. } => format!("Saved: follow the macOS appearance, in {}", tilde(&path)),
+        Choice::Follow { .. } => format!("Saved: follow the {APPEARANCE} appearance, in {}", tilde(&path)),
         Choice::Theme { .. } => format!("Saved {value} as the theme in {}", tilde(&path)),
     })
 }
@@ -567,6 +567,89 @@ pub fn font_smoothing() -> bool {
     *SYSTEM.get_or_init(system_smoothing)
 }
 
+#[cfg(target_os = "macos")]
+const FOLLOW_LABEL: &str = "Follow macOS";
+#[cfg(target_os = "macos")]
+const APPEARANCE: &str = "macOS";
+#[cfg(not(target_os = "macos"))]
+const FOLLOW_LABEL: &str = "Follow terminal";
+#[cfg(not(target_os = "macos"))]
+const APPEARANCE: &str = "terminal's";
+
+#[cfg(target_os = "macos")]
+pub fn set_dark(_dark: bool) {}
+
+#[cfg(target_os = "macos")]
+pub fn desktop_dark() -> Option<bool> {
+    None
+}
+
+#[cfg(not(target_os = "macos"))]
+static DARK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(not(target_os = "macos"))]
+pub fn set_dark(dark: bool) {
+    DARK.store(dark, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn desktop_dark() -> Option<bool> {
+    let until = std::time::Instant::now() + std::time::Duration::from_millis(500);
+    let owned = gdbus(&["org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus.NameHasOwner", "org.freedesktop.portal.Desktop"], until)?;
+    if owned.trim() != "(true,)" && !portal_activatable(&gdbus(&["org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus.ListActivatableNames"], until)?) {
+        return None;
+    }
+    portal_scheme(&gdbus(&["org.freedesktop.portal.Desktop", "/org/freedesktop/portal/desktop", "org.freedesktop.portal.Settings.Read", "org.freedesktop.appearance", "color-scheme"], until)?)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn gdbus(call: &[&str], until: std::time::Instant) -> Option<String> {
+    use std::process::{Command, Stdio};
+    let [dest, path, method, args @ ..] = call else { return None };
+    let mut child = Command::new("gdbus")
+        .args(["call", "--session", "--timeout", "1", "--dest", dest, "--object-path", path, "--method", method])
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    while child.try_wait().ok()?.is_none() {
+        if std::time::Instant::now() >= until {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    Some(String::from_utf8_lossy(&child.wait_with_output().ok()?.stdout).into_owned())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn portal_activatable(reply: &str) -> bool {
+    reply.contains("'org.freedesktop.portal.Desktop'")
+}
+
+#[cfg(not(target_os = "macos"))]
+fn portal_scheme(reply: &str) -> Option<bool> {
+    match reply.split("uint32 ").nth(1)?.chars().next()? {
+        '1' => Some(true),
+        '2' => Some(false),
+        _ => None,
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn system_smoothing() -> bool {
+    true
+}
+
+#[cfg(not(target_os = "macos"))]
+fn system_dark() -> bool {
+    DARK.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+#[cfg(target_os = "macos")]
 fn system_smoothing() -> bool {
     use objc2_foundation::{NSString, NSUserDefaults};
     let d = NSUserDefaults::standardUserDefaults();
@@ -574,6 +657,7 @@ fn system_smoothing() -> bool {
     d.objectForKey(&key).is_none() || d.integerForKey(&key) != 0
 }
 
+#[cfg(target_os = "macos")]
 fn system_dark() -> bool {
     use objc2_foundation::{NSString, NSUserDefaults};
     let style = NSUserDefaults::standardUserDefaults().stringForKey(&NSString::from_str("AppleInterfaceStyle"));
@@ -586,6 +670,23 @@ mod tests {
 
     fn parse(text: &str) -> Result<Config, String> {
         super::parse(text, Path::new("/nonexistent"))
+    }
+
+    #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn the_portal_reply_names_the_scheme() {
+        assert_eq!(portal_scheme("(<<uint32 1>>,)\n"), Some(true));
+        assert_eq!(portal_scheme("(<<uint32 2>>,)\n"), Some(false));
+        assert_eq!(portal_scheme("(<<uint32 0>>,)\n"), None);
+        assert_eq!(portal_scheme(""), None);
+    }
+
+    #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn a_portal_that_can_start_counts() {
+        assert!(portal_activatable("(['org.freedesktop.DBus', 'org.freedesktop.portal.Desktop', 'org.gnome.Shell'],)\n"));
+        assert!(!portal_activatable("(['org.freedesktop.DBus', 'org.freedesktop.portal.Desktop.Extra'],)\n"));
+        assert!(!portal_activatable(""));
     }
 
     #[test]
@@ -748,12 +849,24 @@ mod tests {
         assert_eq!(std::fs::read_to_string(dir.join("real/later.toml")).unwrap(), "made");
         assert!(replace(&dir.join("config.toml"), "stale", "lost").is_err());
         std::fs::set_permissions(dir.join("real/config.toml"), std::os::unix::fs::PermissionsExt::from_mode(0o640)).unwrap();
-        assert!(std::process::Command::new("xattr").args(["-w", "mddog.test", "kept"]).arg(dir.join("real/config.toml")).status().unwrap().success());
+        #[cfg(target_os = "macos")]
+        {
+            let path = std::ffi::CString::new(dir.join("real/config.toml").as_os_str().as_encoded_bytes()).unwrap();
+            // SAFETY: `path` and `c"mddog.test"` are NUL-terminated C strings, and `b"kept"` is valid for 4 bytes.
+            assert_eq!(unsafe { libc::setxattr(path.as_ptr(), c"mddog.test".as_ptr(), b"kept".as_ptr().cast(), 4, 0, 0) }, 0);
+        }
         replace(&dir.join("config.toml"), "new", "newer").unwrap();
         let mode = std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(dir.join("real/config.toml")).unwrap().permissions());
         assert_eq!(mode & 0o777, 0o640);
-        let out = std::process::Command::new("xattr").args(["-p", "mddog.test"]).arg(dir.join("real/config.toml")).output().unwrap();
-        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "kept");
+        #[cfg(target_os = "macos")]
+        {
+            let path = std::ffi::CString::new(dir.join("real/config.toml").as_os_str().as_encoded_bytes()).unwrap();
+            let mut buf = [0u8; 16];
+            // SAFETY: `path` and `c"mddog.test"` are NUL-terminated C strings, and `buf` is valid for `buf.len()` bytes.
+            let n = unsafe { libc::getxattr(path.as_ptr(), c"mddog.test".as_ptr(), buf.as_mut_ptr().cast(), buf.len(), 0, 0) };
+            assert_eq!(n, 4);
+            assert_eq!(&buf[..4], b"kept");
+        }
         let decoy = dir.join("decoy");
         std::fs::write(&decoy, "keep").unwrap();
         let nonce = crate::tmp::nonce();

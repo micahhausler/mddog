@@ -23,3 +23,22 @@ fn d4_watch_rename() {
     let elapsed = got.expect("no event for a write-then-rename save");
     assert!(elapsed < Duration::from_millis(200), "event after {elapsed:?}");
 }
+
+#[test]
+fn reading_the_file_is_no_change() {
+    let dir = std::env::temp_dir().join(format!("mddog-watch-read-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("doc.md");
+    std::fs::write(&file, "# one\n").unwrap();
+    let (tx, rx) = mpsc::channel();
+    let _w = mddog::watch::spawn(&file, move || {
+        let _ = tx.send(());
+    })
+    .expect("watcher");
+    std::thread::sleep(Duration::from_millis(300));
+    while rx.try_recv().is_ok() {}
+    std::fs::read(&file).unwrap();
+    let fired = rx.recv_timeout(Duration::from_millis(300)).is_ok();
+    let _ = std::fs::remove_dir_all(&dir);
+    assert!(!fired, "a read of the file counted as a change");
+}

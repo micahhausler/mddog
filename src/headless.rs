@@ -29,6 +29,12 @@ const WEBP_SMALL_MAX: usize = 20_000;
 const WEBP_LOSSY_FROM: usize = 12_000;
 
 pub fn run(file: PathBuf, cols: u16, webp: bool) -> i32 {
+    let desktop = std::thread::spawn(crate::config::desktop_dark);
+    std::thread::spawn(crate::render::svg::warm);
+    if let Some(m) = crate::render::text::missing_fonts() {
+        eprintln!("mdd: {m}");
+        return 1;
+    }
     let dir = crate::tmp::tiles_dir();
     if let Err(e) = std::os::unix::fs::DirBuilderExt::mode(&mut std::fs::DirBuilder::new(), 0o700).create(&dir) {
         eprintln!("mdd: can't make {}: {}", dir.display(), term::io_error(&e));
@@ -52,6 +58,9 @@ pub fn run(file: PathBuf, cols: u16, webp: bool) -> i32 {
         return 1;
     };
     let engine = Engine::new(800.0, crate::term::screen::display_scale(), crate::config::font_smoothing());
+    if let Ok(Some(dark)) = desktop.join() {
+        crate::config::set_dark(dark);
+    }
     let scale = engine.scale.get();
     // The desktop pane, which asks for WebP, lays the page out at its own cell, whatever terminal Claude Code was
     // started from.

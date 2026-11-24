@@ -102,6 +102,8 @@ pub struct Probe {
     pub kitty_direct: bool,
     pub sync: bool,
     pub pixel_mouse: bool,
+    pub dark: Option<bool>,
+    pub background: bool,
     pub answered: bool,
 }
 
@@ -141,6 +143,10 @@ impl Probe {
     /// Ghostty shows kitty image pixels as Display P3 but cell colors as sRGB, unless `window-colorspace = display-p3`.
     pub fn ghostty(&self) -> bool {
         self.version.starts_with("ghostty")
+    }
+
+    pub fn display_p3(&self) -> bool {
+        cfg!(target_os = "macos") && self.ghostty()
     }
 
     /// Rex, which answers `XTVERSION` as `rex 0.1.0-preview.20`.
@@ -238,7 +244,7 @@ impl Tty {
         let _ = crate::tmp::write_private(std::path::Path::new(&temp_path), &[0, 0, 0]);
         let b64 = |s: &str| kitty::base64(s.as_bytes());
         let q = format!(
-            "\x1b[16t\x1b[>0q\x1b[?2026$p\x1b[?1016$p\x1b_Gi=4001,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\\x1b_Gi=4002,s=1,v=1,a=q,t=s,f=24;{}\x1b\\\x1b_Gi=4003,s=1,v=1,a=q,t=t,f=24;{}\x1b\\\x1b[c",
+            "\x1b[16t\x1b[>0q\x1b[?2026$p\x1b[?1016$p{SCHEME_QUERY}\x1b_Gi=4001,s=1,v=1,a=q,t=d,f=24;AAAA\x1b\\\x1b_Gi=4002,s=1,v=1,a=q,t=s,f=24;{}\x1b\\\x1b_Gi=4003,s=1,v=1,a=q,t=t,f=24;{}\x1b\\\x1b[c",
             b64(&shm_name),
             b64(&temp_path)
         );
@@ -256,6 +262,40 @@ impl Tty {
         crate::trace::log(format_args!("probe {}", buf.escape_ascii()));
         parse_probe(&buf)
     }
+}
+
+#[cfg(not(target_os = "macos"))]
+const SCHEME_QUERY: &str = "\x1b]11;?\x1b\\";
+#[cfg(target_os = "macos")]
+const SCHEME_QUERY: &str = "";
+#[cfg(not(target_os = "macos"))]
+const SCHEME_ON: &str = "\x1b[?2031h\x1b[?996n";
+#[cfg(not(target_os = "macos"))]
+const SCHEME_OFF: &str = "\x1b[?2031l";
+#[cfg(target_os = "macos")]
+const SCHEME_ON: &str = "";
+#[cfg(target_os = "macos")]
+const SCHEME_OFF: &str = "";
+
+fn scheme(params: &str) -> Option<bool> {
+    match params {
+        "?997;1" => Some(true),
+        "?997;2" => Some(false),
+        _ => None,
+    }
+}
+
+pub const BACKGROUND_QUERY: &str = "\x1b]11;?\x1b\\";
+
+fn dark_background(s: &str) -> Option<bool> {
+    let rgb = s.split("]11;rgb:").nth(1)?;
+    let mut ch = rgb.split(['/', '\x1b', '\x07']).take(3).map(|h| {
+        let v = u32::from_str_radix(h, 16).ok()?;
+        let max = (1u32 << (4 * h.len().clamp(1, 4))) - 1;
+        Some(f64::from(v) / f64::from(max))
+    });
+    let (r, g, b) = (ch.next()??, ch.next()??, ch.next()??);
+    Some(0.2126 * r + 0.7152 * g + 0.0722 * b < 0.5)
 }
 
 /// How long to wait for graphics replies that follow the DA1 reply.
@@ -292,6 +332,9 @@ fn parse_probe(buf: &[u8]) -> (Probe, Vec<u8>) {
     p.kitty_direct = s.contains("Gi=4001;OK");
     p.kitty_shm = s.contains("Gi=4002;OK");
     p.kitty_temp = s.contains("Gi=4003;OK");
+    let background = dark_background(&s);
+    p.background = background.is_some();
+    p.dark = background.or_else(|| s.find("[?997;").and_then(|i| s.get(i + 1..i + 7)).and_then(scheme));
     let end = probe_end(buf);
     p.answered = end.is_some();
     let rest = end.map_or_else(Vec::new, |end| buf[end..].to_vec());
@@ -331,12 +374,12 @@ pub const SYNC_END: &str = "\x1b[?2026l";
 /// The alternate screen, cleared, with no line wrap and no cursor, and mouse and key reports on. It saves the
 /// window title, which `title` then changes.
 pub fn enter(pixel_mouse: bool) -> String {
-    format!("\x1b[22;0t\x1b[?1049h\x1b[?7l\x1b[?25l\x1b[2J\x1b[H{MOUSE_ON}{KEYS_ON}{}", if pixel_mouse { PIXEL_MOUSE_ON } else { "" })
+    format!("\x1b[22;0t\x1b[?1049h\x1b[?7l\x1b[?25l\x1b[2J\x1b[H{MOUSE_ON}{KEYS_ON}{SCHEME_ON}{}", if pixel_mouse { PIXEL_MOUSE_ON } else { "" })
 }
 
 /// Undoes `enter`. Rex keeps no saved titles, so an empty title first gives it back its own.
 pub fn leave() -> String {
-    format!("{MOUSE_OFF}{KEYS_OFF}\x1b[0m\x1b[2J\x1b[?25h\x1b[?7h\x1b[?1049l\x1b]2;\x1b\\\x1b[23;0t")
+    format!("{MOUSE_OFF}{KEYS_OFF}{SCHEME_OFF}\x1b[0m\x1b[2J\x1b[?25h\x1b[?7h\x1b[?1049l\x1b]2;\x1b\\\x1b[23;0t")
 }
 
 /// Sets the window title, which terminals such as Rex show on the tab.
@@ -549,6 +592,8 @@ pub enum Input {
     Key(Key),
     /// The terminal no longer holds this image: it answered a placement with `ENOENT`.
     Gone(u32),
+    Scheme(bool),
+    Background(bool),
 }
 
 pub fn parse_keys(buf: &mut Vec<u8>, flush_esc: bool) -> Vec<Key> {
@@ -556,7 +601,7 @@ pub fn parse_keys(buf: &mut Vec<u8>, flush_esc: bool) -> Vec<Key> {
         .into_iter()
         .filter_map(|i| match i {
             Input::Key(k) => Some(k),
-            Input::Gone(_) => None,
+            Input::Gone(_) | Input::Scheme(_) | Input::Background(_) => None,
         })
         .collect()
 }
@@ -602,6 +647,7 @@ pub fn parse_input(buf: &mut Vec<u8>, flush_esc: bool) -> Vec<Input> {
                     (b'~', "1" | "7") => keys.push(Input::Key(Key::Home)),
                     (b'~', "4" | "8") => keys.push(Input::Key(Key::End)),
                     (b'u', p) => keys.extend(csi_u(p).map(Input::Key)),
+                    (b'n', p) => keys.extend(scheme(p).map(Input::Scheme)),
                     (b'M' | b'm', p) if p.starts_with('<') => {
                         let code: u32 = p[1..].split(';').next().and_then(|x| x.parse().ok()).unwrap_or(0);
                         let side = |(c, r)| if code & 1 == 0 { Key::WheelLeft(c, r) } else { Key::WheelRight(c, r) };
@@ -628,7 +674,15 @@ pub fn parse_input(buf: &mut Vec<u8>, flush_esc: bool) -> Vec<Input> {
             if matches!(n, b']' | b'P' | b'_' | b'^' | b'X') {
                 // A reply holds no ESC but its ST, so another ESC means Alt+P or the like began it:
                 // drop the two bytes and read on, or every mouse report after it would wait.
-                match (i + 2..b.len()).find(|&j| b[j] == 0x07 || b[j] == 0x1b).map(|j| (j, b.get(j + 1))) {
+                let end = (i + 2..b.len()).find(|&j| b[j] == 0x07 || b[j] == 0x1b).map(|j| (j, b.get(j + 1)));
+                if n == b']'
+                    && let Some((j, after)) = end
+                    && (b[j] == 0x07 || after == Some(&b'\\'))
+                    && let Some(dark) = std::str::from_utf8(&b[i + 1..j]).ok().and_then(dark_background)
+                {
+                    keys.push(Input::Background(dark));
+                }
+                match end {
                     Some((j, _)) if b[j] == 0x07 => i = j + 1,
                     Some((j, Some(b'\\'))) => {
                         if n == b'_'
@@ -742,6 +796,33 @@ mod tests {
     fn wraps_at_spaces() {
         assert_eq!(wrap("aaaa bbbb cccc dddd eeee ffff", 20), "aaaa bbbb cccc dddd\neeee ffff");
         assert_eq!(wrap("short", 80), "short");
+    }
+
+    #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn entering_asks_for_scheme_reports_and_the_scheme() {
+        assert!(enter(false).contains("\x1b[?2031h\x1b[?996n"), "a return from the editor would miss a scheme change");
+        assert!(leave().contains("\x1b[?2031l"));
+    }
+
+    #[test]
+    fn a_scheme_report_is_no_key() {
+        let mut b = b"\x1b[?997;1nj\x1b[?997;2n".to_vec();
+        assert_eq!(parse_input(&mut b, true), vec![Input::Scheme(true), Input::Key(Key::Char('j')), Input::Scheme(false)]);
+        let mut b = b"\x1b]11;rgb:ffff/ffff/ffff\x1b\\k\x1b]11;rgb:0d/11/17\x07".to_vec();
+        assert_eq!(parse_input(&mut b, true), vec![Input::Background(false), Input::Key(Key::Char('k')), Input::Background(true)]);
+    }
+
+    #[test]
+    fn the_probe_reads_the_terminal_scheme() {
+        let dark_bg = b"\x1b]11;rgb:0a0a/0a0a/0f0f\x1b\\\x1b[?62;22c";
+        assert_eq!(parse_probe(dark_bg).0.dark, Some(true));
+        let light_bg = b"\x1b]11;rgb:ffff/fefe/f0f0\x07\x1b[?62;22c";
+        assert_eq!(parse_probe(light_bg).0.dark, Some(false));
+        let both = b"\x1b[?997;2n\x1b]11;rgb:2828/2c2c/3434\x1b\\\x1b[?62;22c";
+        assert_eq!(parse_probe(both).0.dark, Some(true), "the background wins: Ghostty reports the desktop's scheme, not its own colors");
+        assert_eq!(parse_probe(b"\x1b[?997;1n\x1b[?62;22c").0.dark, Some(true), "with no background, the scheme report decides");
+        assert_eq!(parse_probe(b"\x1b[?62;22c").0.dark, None);
     }
 
     #[test]

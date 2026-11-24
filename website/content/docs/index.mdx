@@ -3,20 +3,12 @@ title: Quick start
 description: Install mddog and view your first file.
 ---
 
-mddog shows Markdown in your terminal the way GitHub or Obsidian renders it. It works by building the page with macOS's own text and graphics engines, then sending the result to the terminal as images.
-
-## Why mddog?
-
-Other terminal viewers render Markdown with only characters. Code editors render the real page but live outside the terminal. mddog renders the real page in your terminal, using a single binary without browser nor Electron.
-
-<WhyMddogTable className="my-6" />
-
 ## Requirements
 
-- macOS
-- A terminal that supports the [kitty graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/): Ghostty, iTerm2, kitty, WezTerm, or Rex
+- macOS or Linux
+- A terminal that supports the [kitty graphics protocol](https://sw.kovidgoyal.net/kitty/graphics-protocol/): Ghostty, iTerm2, kitty, Konsole, WezTerm, or Rex
 
-See [Compatibility](/docs/compatibility) for more info on the supported terminals.
+See [Compatibility](/docs/compatibility) for what works, what doesn't, and available workarounds.
 
 ## Install
 
@@ -52,7 +44,7 @@ To update, run `brew upgrade mddog`. If you use the [Claude Code plugin](/docs/c
   ```nix
   inputs.mddog = {
     url = "github:qu8n/mddog";
-    # Optional: reuse your own nixpkgs input (used on Apple Silicon)
+    # Optional: reuse your own nixpkgs input (not used on Intel Macs)
     # inputs.nixpkgs.follows = "nixpkgs";
   };
   ```
@@ -84,7 +76,7 @@ To update, run `brew upgrade mddog`. If you use the [Claude Code plugin](/docs/c
   ```sh
   brew uninstall mddog   # or, if you used the script: rm ~/.local/bin/mdd
                          # or, if you used Nix: nix profile remove mddog
-  rm -rf ~/Library/Caches/mddog
+  rm -rf ~/Library/Caches/mddog   # on Linux: rm -rf ~/.cache/mddog
   rm -r ~/.config/mddog
   ```
 

@@ -17,6 +17,8 @@ use crate::term::Key;
 pub enum Event {
     Key(Key),
     Gone(u32),
+    Scheme(bool),
+    Background(bool),
     /// When the signal came.
     Resize(std::time::Instant),
     FileChanged,
@@ -24,6 +26,7 @@ pub enum Event {
     Listed,
     /// A file list preview finished drawing.
     Previewed,
+    Notice(String),
     Quit,
 }
 

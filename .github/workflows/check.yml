@@ -16,17 +16,53 @@ env:
   CARGO_PROFILE_DEV_DEBUG: line-tables-only
 
 jobs:
-  check:
-    # The CoreText, CoreGraphics and pty tests need macOS.
-    runs-on: macos-latest
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends fontconfig fonts-noto-core fonts-noto-mono fonts-noto-color-emoji fonts-dejavu fonts-stix musl-tools
       - name: Install Claude Code for the plugin checks
         run: |
           curl -fsSL https://claude.ai/install.sh | bash -s "$(cat plugins/claude-code/claude-code-version)"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - run: ./check.sh
+      - name: Build the static binary that releases ship
+        if: runner.os == 'Linux'
+        run: |
+          set -eu
+          target=$(uname -m)-unknown-linux-musl
+          rustup target add "$target"
+          cargo build --locked --target "$target"
+          file "target/$target/debug/mdd" | grep -Eq 'statically linked|static-pie linked'
+          "target/$target/debug/mdd" --version
+      - name: Install that binary with install.sh under dash
+        if: runner.os == 'Linux'
+        run: |
+          set -eu
+          rel=$(mktemp -d)
+          case $(uname -m) in aarch64) arch=arm64 ;; *) arch=$(uname -m) ;; esac
+          tarball=mdd-linux-$arch.tar.gz
+          tar czf "$rel/$tarball" -C "target/$(uname -m)-unknown-linux-musl/debug" mdd
+          (cd "$rel" && sha256sum "$tarball" > "$tarball.sha256")
+          out=$(MDDOG_RELEASE_URL="file://$rel" MDDOG_INSTALL_DIR="$rel/my bin" SHELL=/bin/bash dash ./install.sh)
+          printf '%s\n' "$out"
+          "$rel/my bin/mdd" --version
+          hint=$(printf '%s\n' "$out" | sed -n 's/^    \(echo .*\)$/\1/p')
+          HOME=$rel dash -c "$hint"
+          HOME=$rel bash -c ". $rel/.bashrc && command -v mdd" | grep -q "my bin/mdd"
+
+  check:
+    needs: test
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - run: test "${{ needs.test.result }}" = success

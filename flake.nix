@@ -19,6 +19,8 @@
       systems = [
         "aarch64-darwin"
         "x86_64-darwin"
+        "aarch64-linux"
+        "x86_64-linux"
       ];
 
       mkPkgs =
@@ -34,6 +36,16 @@
       forAllSystems = f: lib.genAttrs systems (system: f (mkPkgs system) system);
 
       cargoToml = fromTOML (builtins.readFile ./Cargo.toml);
+      fontsConf =
+        pkgs:
+        pkgs.makeFontsConf {
+          fontDirectories = with pkgs; [
+            dejavu_fonts
+            noto-fonts
+            noto-fonts-color-emoji
+            stix-two
+          ];
+        };
     in
     {
       packages = forAllSystems (
@@ -47,6 +59,14 @@
             cargoLock = {
               lockFile = ./Cargo.lock;
             };
+
+            FONTCONFIG_FILE = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux (fontsConf pkgs);
+
+            nativeBuildInputs = pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.makeWrapper ];
+
+            postInstall = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
+              wrapProgram $out/bin/mdd --set-default FONTCONFIG_FILE ${fontsConf pkgs}
+            '';
 
             checkFlags = [
               # Requires macOS /usr/bin/defaults (unavailable in the Nix sandbox).

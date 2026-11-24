@@ -79,15 +79,54 @@ fn decode(s: &str) -> String {
     crate::render::media::percent_decode(s).unwrap_or_else(|| s.to_string())
 }
 
-pub fn open(url: String) {
-    std::thread::spawn(move || {
-        let _ = Command::new("open").arg(url).stdout(Stdio::null()).stderr(Stdio::null()).status();
-    });
+const OPENER: &str = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+
+fn on_path(name: &str, path: &std::ffi::OsStr) -> bool {
+    std::env::split_paths(path).any(|d| std::fs::metadata(d.join(name)).is_ok_and(|m| m.is_file() && std::os::unix::fs::PermissionsExt::mode(&m.permissions()) & 0o111 != 0))
+}
+
+pub fn open(url: String, failed: impl FnOnce(String) + Send + 'static) -> Result<(), String> {
+    if !std::env::var_os("PATH").is_some_and(|p| on_path(OPENER, &p)) {
+        return Err(format!("Can't open links: {OPENER} is not installed"));
+    }
+    std::thread::spawn(move || run(OPENER, &url, failed));
+    Ok(())
+}
+
+fn run(opener: &str, url: &str, failed: impl FnOnce(String)) {
+    let why = match Command::new(opener).arg(url).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).status() {
+        Ok(s) if s.success() => return,
+        Ok(s) => s.code().map_or_else(|| format!("{opener} was stopped"), |c| format!("{opener} exited with {c}")),
+        Err(e) => format!("{opener}: {}", crate::term::io_error(&e)),
+    };
+    failed(format!("Can't open {url}: {why}"));
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failed_open_says_why() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        run("true", "https://example.com", |m| tx.send(m).unwrap());
+        assert!(rx.try_recv().is_err());
+        run("false", "https://example.com", |m| tx.send(m).unwrap());
+        assert_eq!(rx.try_recv().unwrap(), "Can't open https://example.com: false exited with 1");
+    }
+
+    #[test]
+    fn the_opener_must_be_an_executable_on_path() {
+        let dir = std::env::temp_dir().join(format!("mddog-opener-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = std::env::join_paths([std::path::Path::new("/nonexistent"), &dir]).unwrap();
+        assert!(!on_path("opener", &path));
+        std::fs::write(dir.join("opener"), "#!/bin/sh\n").unwrap();
+        assert!(!on_path("opener", &path), "a file that can't run is no opener");
+        std::fs::set_permissions(dir.join("opener"), std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        assert!(on_path("opener", &path));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn web_mail_anchor_and_local_links_are_followed() {

@@ -1006,7 +1006,7 @@ impl<'a> Layouter<'a> {
                                 (dw, dh) = svg::fit(dw, dh);
                             }
                             let bmp = match &img {
-                                Image::Raster(b) => Some(b.clone()),
+                                Image::Raster(b) => Some(self.images.fitted(src, b, dw, dh)),
                                 Image::Svg(t) => render_svg(t, dw.round() as u32, dh.round() as u32).map(Rc::new),
                             };
                             bmp.map(|b| (b, dw, dh))

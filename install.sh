@@ -21,32 +21,48 @@ case $dir in
   *) show=$dir rc_dir=$dir ;;
 esac
 
-[ "$(uname -s)" = Darwin ] || fail "mddog runs only on macOS"
+case $(uname -s) in
+  Darwin) os=macos ;;
+  Linux) os=linux ;;
+  *) fail "mddog runs only on macOS and Linux" ;;
+esac
+case $(uname -m) in
+  x86_64 | amd64) arch=x86_64 ;;
+  arm64 | aarch64) arch=arm64 ;;
+  *) fail "no mddog build for $(uname -m)" ;;
+esac
+# A shell under Rosetta reports x86_64 on Apple silicon, so ask the hardware too.
+[ "$os" = macos ] && [ "$(sysctl -n hw.optional.arm64 2>/dev/null)" = 1 ] && arch=arm64
+if command -v sha256sum >/dev/null; then
+  check() { sha256sum -c "$1"; }
+else
+  check() { shasum -a 256 -c "$1"; }
+fi
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 cd "$tmp"
-# A shell under Rosetta reports x86_64 on Apple silicon, so ask the hardware too.
-arch=$(uname -m)
-[ "$(sysctl -n hw.optional.arm64 2>/dev/null)" = 1 ] && arch=arm64
-tarball=mdd-macos-$arch.tar.gz
+tarball=mdd-$os-$arch.tar.gz
 curl -fsSL -o "$tarball" "$url/$tarball" || fail "could not download $url/$tarball"
 curl -fsSL -o "$tarball.sha256" "$url/$tarball.sha256" || fail "could not download the checksum"
-shasum -a 256 -c "$tarball.sha256" >/dev/null || fail "checksum mismatch"
+check "$tarball.sha256" >/dev/null || fail "checksum mismatch"
 tar xzf "$tarball"
 
 mkdir -p "$dir"
-mv -f mdd "$dir/mdd"
-xattr -d com.apple.quarantine "$dir/mdd" 2>/dev/null || true
+new=$(mktemp "$dir/.mdd.XXXXXX") || fail "could not write to $show"
+{ cat mdd > "$new" && chmod 755 "$new" && mv -f "$new" "$dir/mdd"; } || { rm -f "$new"; fail "could not install to $show/mdd"; }
+[ "$os" = macos ] && { xattr -d com.apple.quarantine "$dir/mdd" 2>/dev/null || true; }
 echo "$ok Installed $("$dir/mdd" --version) to $show/mdd"
 
 echo
 case ":$PATH:" in
   *":$dir:"*) ;;
   *)
-    case "${SHELL##*/}" in
+    login=${SHELL:-}
+    [ -n "$login" ] || { [ "$os" = linux ] && login=bash || login=zsh; }
+    case "${login##*/}" in
       fish) add="fish_add_path $show" ;;
-      bash) add="echo 'export PATH=\"$rc_dir:\$PATH\"' >> ~/.bash_profile" ;;
+      bash) [ "$os" = macos ] && rc=.bash_profile || rc=.bashrc; add="echo 'export PATH=\"$rc_dir:\$PATH\"' >> ~/$rc" ;;
       *) add="echo 'export PATH=\"$rc_dir:\$PATH\"' >> ~/.zshrc" ;;
     esac
     echo "$show is not on your PATH. To add it, run this, then open a new terminal:"

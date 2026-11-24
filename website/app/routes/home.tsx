@@ -173,7 +173,7 @@ function Terminals() {
   return (
     <section className="mx-auto w-full max-w-6xl px-4 pt-16 pb-20 text-center sm:px-6 sm:pt-20">
       <p className="text-lg text-fd-muted-foreground text-pretty">
-        Works on macOS in any terminal that supports the{' '}
+        Works on macOS and Linux in any terminal that supports the{' '}
         <a
           href="https://sw.kovidgoyal.net/kitty/graphics-protocol/"
           className="rounded-sm underline underline-offset-4 hover:text-fd-foreground outline-none focus-visible:ring-2 focus-visible:ring-fd-ring focus-visible:ring-offset-2 focus-visible:ring-offset-fd-background"

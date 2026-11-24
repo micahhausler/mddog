@@ -117,7 +117,6 @@ impl Loader {
             let Ok(fd) = unsafe { BorrowedFd::borrow_raw(fd) }.try_clone_to_owned() else { return };
             let mut out = File::from(fd);
             let fd = out.as_raw_fd();
-            let theme = config::theme();
             // A terminal it can't draw in yet waits, so the minimum time starts at a visible frame.
             let rex = term::rex_by_env();
             let mut last = None;
@@ -143,7 +142,7 @@ impl Loader {
                 let look = {
                     let t = *lock(&s.tune);
                     let scale = t.scale.unwrap_or(crate::term::screen::SCALE_GUESS);
-                    Look::new(theme, scale, cell_for(t, size, scale))
+                    Look::new(config::theme(), scale, cell_for(t, size, scale))
                 };
                 let bytes = frame(i, &name, size, &look, last != Some((size, look)));
                 {
